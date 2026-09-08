@@ -34,6 +34,9 @@ class OperationType(StrEnum):
     UPGRADE_REPLACE = "UPGRADE_REPLACE"
     SKIP_COLLISION = "SKIP_COLLISION"
     QUARANTINE_CORRUPT = "QUARANTINE_CORRUPT"
+    TORRENT_STAGE_COPY = "TORRENT_STAGE_COPY"
+    TORRENT_RELOCATE = "TORRENT_RELOCATE"
+    TORRENT_TAG = "TORRENT_TAG"
 
 
 class OperationStatus(StrEnum):
@@ -109,9 +112,10 @@ class BatchSummary:
     batch_id: uuid.UUID = field(default_factory=uuid.uuid4)
     dry_run: bool = False
     exit_code: int = EXIT_SUCCESS
+    torrent_summary: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "batch_id": str(self.batch_id),
             "started_at": self.started_at.isoformat(),
             "completed_at": self.completed_at.isoformat(),
@@ -138,3 +142,6 @@ class BatchSummary:
             ],
             "errors": self.errors,
         }
+        if self.torrent_summary is not None:
+            data["torrent_summary"] = self.torrent_summary
+        return data

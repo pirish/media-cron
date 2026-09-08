@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import media_cron.plugins  # noqa: F401
 from media_cron.config import MediaCronConfig
 from media_cron.lock import LockContentionError, StagingLock
 from media_cron.models import (
@@ -19,7 +20,13 @@ from media_cron.models import (
     OperationType,
     TransferMode,
 )
+from media_cron.plugins.base import InputPlugin
+from media_cron.plugins.input.directory import DirectoryScannerInput
+from media_cron.plugins.input.torrent import TorrentInputPlugin
+from media_cron.plugins.output.torrent_seed import TorrentClientSeedOutput
 from media_cron.plugins.registry import PluginRegistry, default_registry
+from media_cron.torrent.base import TorrentClientRegistry
+from media_cron.torrent.models import TorrentClientConfig
 
 
 class Pipeline:
@@ -29,9 +36,36 @@ class Pipeline:
         self,
         config: MediaCronConfig,
         registry: PluginRegistry | None = None,
+        target_torrent_identifier: str | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or default_registry
+        self.target_torrent_identifier = target_torrent_identifier
+
+    def _get_input_plugins(self) -> tuple[list[InputPlugin], TorrentInputPlugin | None]:
+        plugins: list[InputPlugin] = []
+        torrent_plugin: TorrentInputPlugin | None = None
+
+        if self.config.active_torrent_client:
+            client_cfg = self.config.torrent_clients.get(
+                self.config.active_torrent_client
+            ) or TorrentClientConfig(client_type=self.config.active_torrent_client)
+            client = TorrentClientRegistry.create_client(client_cfg)
+            torrent_plugin = TorrentInputPlugin(
+                client=client,
+                config=client_cfg,
+                target_identifier=self.target_torrent_identifier,
+            )
+            plugins.append(torrent_plugin)
+
+        if self.config.hybrid_ingest or not self.config.active_torrent_client:
+            dir_plugin = self.registry.get_input("directory_scanner")
+            if self.config.hybrid_ingest:
+                plugins.insert(0, dir_plugin)
+            else:
+                plugins.append(dir_plugin)
+
+        return plugins, torrent_plugin
 
     def _resolve_destination_path(self, asset: MediaAsset) -> Path:
         """Resolves target library path using configured templates."""
@@ -92,11 +126,51 @@ class Pipeline:
         return dest_root / rel_path
 
     def plan(
-        self, source_path: Path, staging_path: Path
-    ) -> tuple[list[OperationPlan], list[DiscoveredItem]]:
+        self, source_path: Path | None, staging_path: Path
+    ) -> tuple[list[OperationPlan], list[DiscoveredItem], TorrentInputPlugin | None]:
         """Generates a list of planned operations without mutating files."""
-        input_plugin = self.registry.get_input(self.config.plugins.input)
-        discovered_items = list(input_plugin.discover(source_path, staging_path, dry_run=True))
+        seen_paths: set[Path] = set()
+        if source_path is not None and source_path.resolve() == staging_path.resolve():
+            scanner = DirectoryScannerInput()
+            raw_items = list(scanner.discover(staging_path, staging_path, dry_run=True))
+            for item in raw_items:
+                seen_paths.add(item.source_path.resolve())
+            torrent_plugin = None
+        else:
+            input_plugins, torrent_plugin = self._get_input_plugins()
+            raw_items = []
+
+            for plugin in input_plugins:
+                if plugin.plugin_name == "directory_scanner" and (
+                    not source_path or not Path(source_path).exists()
+                ):
+                    continue
+                for item in plugin.discover(
+                    source_path or staging_path, staging_path, dry_run=True
+                ):
+                    resolved = item.source_path.resolve()
+                    if resolved not in seen_paths:
+                        seen_paths.add(resolved)
+                        raw_items.append(item)
+
+        discovered_items: list[DiscoveredItem] = []
+        for item in raw_items:
+            if item.is_directory and item.source_path.is_dir():
+                for sub_file in item.source_path.rglob("*"):
+                    if sub_file.is_file() and not sub_file.name.startswith("."):
+                        stat = sub_file.stat()
+                        discovered_items.append(
+                            DiscoveredItem(
+                                source_path=sub_file,
+                                file_size=stat.st_size,
+                                modified_time=stat.st_mtime,
+                                is_archive=sub_file.suffix.lower()
+                                in (".zip", ".rar", ".7z", ".tar"),
+                                is_directory=False,
+                            )
+                        )
+            else:
+                discovered_items.append(item)
 
         lookup_plugins = self.registry.get_lookups(self.config.plugins.lookups)
         plans: list[OperationPlan] = []
@@ -172,8 +246,10 @@ class Pipeline:
 
                     # Plan associated subtitles
                     for sub in asset.subtitle_files:
+                        sub_resolved = sub.resolve()
+                        if sub_resolved in seen_paths:
+                            continue
                         sub_ext = sub.suffix.lower()
-                        # destination with sub_ext
                         dest_sub = dest_path.with_suffix(sub_ext)
                         plans.append(
                             OperationPlan(
@@ -208,22 +284,49 @@ class Pipeline:
                     break
 
             if not handled:
-                # Default fallback organize
-                dest_path = (
-                    (self.config.paths.destination_dir or Path("/tmp/media")) / "Other" / path.name
-                )
+                # Non-media clutter or unsupported files purged from staging
                 plans.append(
                     OperationPlan(
-                        op_type=OperationType.ORGANIZE,
+                        op_type=OperationType.PURGE_JUNK,
                         transfer_mode=mode,
                         source_path=path,
-                        destination_path=dest_path,
-                        reason="Uncategorized file",
+                        destination_path=None,
+                        reason=f"Unrecognized non-media clutter: '{path.name}'",
                         dry_run=True,
                     )
                 )
 
-        return plans, discovered_items
+        if torrent_plugin and torrent_plugin.processed_torrents:
+            seeding_cfg = torrent_plugin.config.seeding
+            for torrent in torrent_plugin.processed_torrents:
+                if seeding_cfg.mode == "client_relocate":
+                    relocate_dest = (
+                        self.config.paths.seed_dir
+                        if seeding_cfg.target_location == "seed_dir"
+                        else self.config.paths.destination_dir
+                    )
+                    if relocate_dest:
+                        plans.append(
+                            OperationPlan(
+                                op_type=OperationType.TORRENT_RELOCATE,
+                                transfer_mode=TransferMode.MOVE,
+                                source_path=Path(torrent.info_hash),
+                                destination_path=relocate_dest,
+                                reason=f"Client storage relocated to {relocate_dest}",
+                                dry_run=True,
+                            )
+                        )
+                plans.append(
+                    OperationPlan(
+                        op_type=OperationType.TORRENT_TAG,
+                        transfer_mode=TransferMode.MOVE,
+                        source_path=Path(torrent.info_hash),
+                        reason=f"Applied tag '{seeding_cfg.completion_tag}' and category '{seeding_cfg.completion_category}'",
+                        dry_run=True,
+                    )
+                )
+
+        return plans, discovered_items, torrent_plugin
 
     def run(self) -> BatchSummary:
         """Executes the pipeline according to active configuration."""
@@ -235,17 +338,28 @@ class Pipeline:
         staging_dir = self.config.paths.staging_dir
         dest_dir = self.config.paths.destination_dir
 
-        if not source_dir or not dest_dir:
+        if not dest_dir:
             return BatchSummary(
                 batch_id=batch_id,
                 started_at=started_at,
                 completed_at=datetime.now(UTC),
                 exit_code=EXIT_CONFIG_ERROR,
-                errors=["Source directory and Destination directory must be specified."],
+                errors=["Destination directory must be specified."],
+            )
+
+        if not self.config.active_torrent_client and not source_dir:
+            return BatchSummary(
+                batch_id=batch_id,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                exit_code=EXIT_CONFIG_ERROR,
+                errors=[
+                    "Source directory must be specified when torrent client is not configured."
+                ],
             )
 
         if dry_run:
-            plans, discovered = self.plan(source_dir, staging_dir)
+            plans, discovered, torrent_plugin = self.plan(source_dir, staging_dir)
             results = [
                 OperationResult(
                     plan=p, status=OperationStatus.SUCCESS, message="Simulated in dry-run mode"
@@ -253,6 +367,17 @@ class Pipeline:
                 for p in plans
             ]
             completed_at = datetime.now(UTC)
+
+            torrent_summary = None
+            if torrent_plugin:
+                torrent_summary = {
+                    "client": self.config.active_torrent_client,
+                    "discovered_torrents": len(torrent_plugin.processed_torrents),
+                    "ingested_torrents": len(torrent_plugin.processed_torrents),
+                    "relocated_torrents": 0,
+                    "tagged_torrents": 0,
+                }
+
             return BatchSummary(
                 batch_id=batch_id,
                 started_at=started_at,
@@ -271,17 +396,32 @@ class Pipeline:
                 operations=results,
                 dry_run=True,
                 exit_code=EXIT_SUCCESS,
+                torrent_summary=torrent_summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
         try:
             with StagingLock(staging_dir):
                 # 1. Ingest into staging
-                input_plugin = self.registry.get_input(self.config.plugins.input)
-                staged_items = list(input_plugin.discover(source_dir, staging_dir, dry_run=False))
+                input_plugins, torrent_plugin = self._get_input_plugins()
+                staged_items: list[DiscoveredItem] = []
+                seen_staged: set[Path] = set()
+
+                for plugin in input_plugins:
+                    if plugin.plugin_name == "directory_scanner" and (
+                        not source_dir or not Path(source_dir).exists()
+                    ):
+                        continue
+                    for item in plugin.discover(
+                        source_dir or staging_dir, staging_dir, dry_run=False
+                    ):
+                        resolved = item.source_path.resolve()
+                        if resolved not in seen_staged:
+                            seen_staged.add(resolved)
+                            staged_items.append(item)
 
                 # 2. Generate and execute plans
-                plans, _ = self.plan(staging_dir, staging_dir)
+                plans, _, _ = self.plan(staging_dir, staging_dir)
                 outputs = self.registry.get_outputs(self.config.plugins.outputs)
 
                 results: list[OperationResult] = []
@@ -337,6 +477,68 @@ class Pipeline:
                         if op_result.error:
                             errors.append(op_result.error)
 
+                # Seeding Relocation & Tagging for processed torrents
+                relocated_count = 0
+                tagged_count = 0
+                if torrent_plugin and torrent_plugin.processed_torrents:
+                    client = torrent_plugin.client
+                    client_cfg = torrent_plugin.config
+                    seeding_cfg = client_cfg.seeding
+                    torrent_seed_out = TorrentClientSeedOutput(
+                        client=client, seeding_config=seeding_cfg
+                    )
+
+                    for torrent in torrent_plugin.processed_torrents:
+                        # 1. Relocation if client_relocate enabled
+                        if seeding_cfg.mode == "client_relocate":
+                            relocate_dest = (
+                                self.config.paths.seed_dir
+                                if seeding_cfg.target_location == "seed_dir"
+                                else self.config.paths.destination_dir
+                            )
+                            if relocate_dest:
+                                plan = OperationPlan(
+                                    op_type=OperationType.TORRENT_RELOCATE,
+                                    transfer_mode=TransferMode.MOVE,
+                                    source_path=Path(torrent.info_hash),
+                                    destination_path=relocate_dest,
+                                    reason=f"Client storage relocated to {relocate_dest}",
+                                )
+                                rel_res = torrent_seed_out.execute(plan)
+                                results.append(rel_res)
+                                if rel_res.status == OperationStatus.SUCCESS:
+                                    relocated_count += 1
+                                else:
+                                    error_count += 1
+                                    if rel_res.error:
+                                        errors.append(rel_res.error)
+
+                        # 2. Dual status update (tag + category) and pause
+                        plan = OperationPlan(
+                            op_type=OperationType.TORRENT_TAG,
+                            transfer_mode=TransferMode.MOVE,
+                            source_path=Path(torrent.info_hash),
+                            reason=f"Applied tag '{seeding_cfg.completion_tag}' and category '{seeding_cfg.completion_category}'",
+                        )
+                        tag_res = torrent_seed_out.execute(plan)
+                        results.append(tag_res)
+                        if tag_res.status == OperationStatus.SUCCESS:
+                            tagged_count += 1
+                        else:
+                            error_count += 1
+                            if tag_res.error:
+                                errors.append(tag_res.error)
+
+                torrent_summary = None
+                if torrent_plugin:
+                    torrent_summary = {
+                        "client": self.config.active_torrent_client,
+                        "discovered_torrents": len(torrent_plugin.processed_torrents),
+                        "ingested_torrents": len(torrent_plugin.processed_torrents),
+                        "relocated_torrents": relocated_count,
+                        "tagged_torrents": tagged_count,
+                    }
+
                 exit_code = EXIT_SUCCESS if error_count == 0 else EXIT_PARTIAL_OR_LOCKED
 
                 return BatchSummary(
@@ -353,6 +555,7 @@ class Pipeline:
                     operations=results,
                     dry_run=False,
                     exit_code=exit_code,
+                    torrent_summary=torrent_summary,
                 )
         except LockContentionError as e:
             return BatchSummary(

@@ -146,3 +146,38 @@ def test_quickstart_scenario_c_lock_contention(tmp_path: Path):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         fd.close()
+
+
+def test_cli_run_hybrid_flag(tmp_path: Path):
+    source = tmp_path / "downloads"
+    staging = tmp_path / "staging"
+    destination = tmp_path / "library"
+
+    source.mkdir()
+    staging.mkdir()
+    destination.mkdir()
+
+    movie = source / "Sample.Movie.2024.1080p.mkv"
+    movie.write_bytes(b"\x1a\x45\xdf\xa3" + b"movie content" * 100)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--source",
+            str(source),
+            "--staging",
+            str(staging),
+            "--destination",
+            str(destination),
+            "--hybrid",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["dry_run"] is True
+    assert data["total_scanned"] >= 1

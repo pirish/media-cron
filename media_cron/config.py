@@ -4,6 +4,13 @@ from pathlib import Path
 
 import yaml
 
+from media_cron.torrent.models import (
+    PathMappingRule,
+    TorrentClientConfig,
+    TorrentFilterConfig,
+    TorrentSeedingConfig,
+)
+
 DEFAULT_JUNK_EXTENSIONS = [
     ".nfo",
     ".txt",
@@ -55,6 +62,9 @@ class MediaCronConfig:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     templates: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_TEMPLATES))
     plugins: PluginsConfig = field(default_factory=PluginsConfig)
+    active_torrent_client: str | None = None
+    hybrid_ingest: bool = False
+    torrent_clients: dict[str, TorrentClientConfig] = field(default_factory=dict)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -75,6 +85,11 @@ class MediaCronConfig:
         if config_path and config_path.exists():
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+
+            if "active_torrent_client" in data:
+                cfg.active_torrent_client = data["active_torrent_client"]
+            if "hybrid_ingest" in data:
+                cfg.hybrid_ingest = bool(data["hybrid_ingest"])
 
             if "paths" in data:
                 p = data["paths"]
@@ -112,6 +127,46 @@ class MediaCronConfig:
                 if "outputs" in pl:
                     cfg.plugins.outputs = list(pl["outputs"])
 
+            if "torrent_clients" in data and isinstance(data["torrent_clients"], dict):
+                for name, cdata in data["torrent_clients"].items():
+                    pms = [
+                        PathMappingRule(r["remote_prefix"], r["local_prefix"])
+                        for r in cdata.get("path_mappings", [])
+                    ]
+                    fdata = cdata.get("filters", {})
+                    filters = TorrentFilterConfig(
+                        categories=list(fdata.get("categories", [])),
+                        tags=list(fdata.get("tags", [])),
+                        exclude_tags=list(fdata.get("exclude_tags", ["media-cron-processed"])),
+                        exclude_categories=list(
+                            fdata.get("exclude_categories", ["media-cron-done"])
+                        ),
+                        min_progress=float(fdata.get("min_progress", 1.0)),
+                    )
+                    sdata = cdata.get("seeding", {})
+                    seeding = TorrentSeedingConfig(
+                        mode=str(sdata.get("mode", "client_relocate")),
+                        target_location=str(sdata.get("target_location", "seed_dir")),
+                        completion_tag=str(sdata.get("completion_tag", "media-cron-processed")),
+                        completion_category=str(
+                            sdata.get("completion_category", "media-cron-done")
+                        ),
+                        pause_after_process=bool(sdata.get("pause_after_process", False)),
+                    )
+                    client_cfg = TorrentClientConfig(
+                        client_type=str(cdata.get("client_type", name)),
+                        host=str(cdata.get("host", "localhost")),
+                        port=int(cdata.get("port", 8080)),
+                        username=cdata.get("username"),
+                        password=cdata.get("password"),
+                        use_ssl=bool(cdata.get("use_ssl", False)),
+                        timeout=float(cdata.get("timeout", 10.0)),
+                        path_mappings=pms,
+                        filters=filters,
+                        seeding=seeding,
+                    )
+                    cfg.torrent_clients[name] = client_cfg
+
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
         if env_source:
@@ -136,5 +191,41 @@ class MediaCronConfig:
         env_dry = os.getenv("MEDIA_CRON_DRY_RUN")
         if env_dry is not None:
             cfg.general.dry_run = env_dry.lower() in ("true", "1", "yes")
+
+        env_client = os.getenv("MEDIA_CRON_ACTIVE_TORRENT_CLIENT")
+        if env_client:
+            cfg.active_torrent_client = env_client
+
+        env_hybrid = os.getenv("MEDIA_CRON_HYBRID_INGEST")
+        if env_hybrid is not None:
+            cfg.hybrid_ingest = env_hybrid.lower() in ("true", "1", "yes")
+
+        # Specific qBittorrent environment overrides
+        qb_host = os.getenv("MEDIA_CRON_QBITTORRENT_HOST")
+        qb_port = os.getenv("MEDIA_CRON_QBITTORRENT_PORT")
+        qb_user = os.getenv("MEDIA_CRON_QBITTORRENT_USERNAME")
+        qb_pass = os.getenv("MEDIA_CRON_QBITTORRENT_PASSWORD")
+        qb_seed_mode = os.getenv("MEDIA_CRON_SEEDING_MODE")
+        qb_tag = os.getenv("MEDIA_CRON_COMPLETION_TAG")
+        qb_cat = os.getenv("MEDIA_CRON_COMPLETION_CATEGORY")
+
+        if any([qb_host, qb_port, qb_user, qb_pass, qb_seed_mode, qb_tag, qb_cat]):
+            if "qbittorrent" not in cfg.torrent_clients:
+                cfg.torrent_clients["qbittorrent"] = TorrentClientConfig(client_type="qbittorrent")
+            qb = cfg.torrent_clients["qbittorrent"]
+            if qb_host:
+                qb.host = qb_host
+            if qb_port:
+                qb.port = int(qb_port)
+            if qb_user:
+                qb.username = qb_user
+            if qb_pass:
+                qb.password = qb_pass
+            if qb_seed_mode:
+                qb.seeding.mode = qb_seed_mode
+            if qb_tag:
+                qb.seeding.completion_tag = qb_tag
+            if qb_cat:
+                qb.seeding.completion_category = qb_cat
 
         return cfg
