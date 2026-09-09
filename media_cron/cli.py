@@ -77,6 +77,19 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Average Confidence:    {asum.get('average_confidence', 0.0)}",
             ]
         )
+    if summary.books_summary:
+        bsum = summary.books_summary
+        lines.extend(
+            [
+                "--- Books Telemetry ---",
+                f"Total Books:           {bsum.get('total_books', 0)}",
+                f"Identified External:   {bsum.get('identified_external', 0)}",
+                f"Identified Local Only: {bsum.get('identified_local_only', 0)}",
+                f"Cache Hits:            {bsum.get('cache_hits', 0)}",
+                f"Cache Misses:          {bsum.get('cache_misses', 0)}",
+                f"Average Confidence:    {bsum.get('average_confidence', 0.0)}",
+            ]
+        )
     lines.append("--- Operations ---")
     for op in summary.operations:
         status_tag = f"[{op.status.value}]"
@@ -93,6 +106,7 @@ def render_text_summary(summary: BatchSummary) -> str:
 
 @app.command("run")
 @app.command("organize")
+@app.command("process")
 def run_command(
     source: Path | None = typer.Option(
         None, "--source", "--source-dir", "-s", help="Directory containing raw downloads"
@@ -149,6 +163,36 @@ def run_command(
         "--audiobook-cache/--no-audiobook-cache",
         help="Enable or disable response caching for audiobooks",
     ),
+    books: bool | None = typer.Option(
+        None,
+        "--books/--no-books",
+        help="Enable or disable digital book processing",
+    ),
+    book_lookup: bool | None = typer.Option(
+        None,
+        "--book-lookup/--no-book-lookup",
+        help="Enable or disable external catalog identification for books",
+    ),
+    udc_lookup: bool | None = typer.Option(
+        None,
+        "--udc-lookup/--no-udc-lookup",
+        help="Enable or disable Universal Decimal Classification lookup",
+    ),
+    convert_epub: bool | None = typer.Option(
+        None,
+        "--convert-epub/--no-convert-epub",
+        help="Convert non-standard book formats to EPUB",
+    ),
+    retention: str | None = typer.Option(
+        None,
+        "--retention",
+        help="Retention policy for original files after EPUB conversion: preserve, archive, replace",
+    ),
+    archive_dir: Path | None = typer.Option(
+        None,
+        "--archive-dir",
+        help="Target archive directory when retention is 'archive'",
+    ),
     format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
     config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
@@ -199,6 +243,20 @@ def run_command(
             cfg.audiobook.providers = {
                 target_p: ExternalProviderConfig(provider_name=target_p, enabled=True, priority=1)
             }
+
+    # Book CLI overrides
+    if books is not None:
+        cfg.books.enabled = books
+    if book_lookup is not None:
+        cfg.books.enable_external_lookup = book_lookup
+    if udc_lookup is not None:
+        cfg.books.udc_lookup.enabled = udc_lookup
+    if convert_epub is not None:
+        cfg.books.conversion.enabled = convert_epub
+    if retention:
+        cfg.books.conversion.retention_policy = retention.lower()
+    if archive_dir:
+        cfg.books.conversion.archive_dir = archive_dir
 
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:
@@ -441,6 +499,191 @@ def test_book_lookup(
         else:
             typer.echo(f"Error during lookup: {e}", err=True)
         raise typer.Exit(code=1) from e
+
+
+@app.command("test-book-identify")
+def test_book_identify(
+    file_or_title: str = typer.Argument(..., help="Path to book file or book title query"),
+    author: str | None = typer.Option(None, "--author", "-a", help="Author name to narrow query"),
+    udc: bool = typer.Option(
+        True, "--udc/--no-udc", help="Include Universal Decimal Classification lookup"
+    ),
+    format: str = typer.Option(
+        "text", "--format", "-f", help="Output display format: table/text or json"
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Diagnostic command to test digital book identification and UDC classification."""
+    from media_cron.metadata.book_identifier import BookIdentifier
+    from media_cron.metadata.book_reader import BookMetadataReader
+    from media_cron.metadata.models import BookMetadata
+    from media_cron.metadata.udc import UDCResolver
+
+    cfg = MediaCronConfig.load(config_path=config)
+    cfg.books.udc_lookup.enabled = udc
+    udc_resolver = UDCResolver() if udc else None
+    identifier = BookIdentifier(config=cfg.books, udc_resolver=udc_resolver)
+
+    path_candidate = Path(file_or_title)
+    if path_candidate.exists() and path_candidate.is_file():
+        local_meta = BookMetadataReader().read_metadata(path_candidate)
+        if author:
+            local_meta.author = author
+        asset = identifier.identify(local_metadata=local_meta, path=path_candidate)
+    else:
+        local_meta = BookMetadata(title=file_or_title, author=author or "Unknown Author")
+        asset = identifier.identify(local_metadata=local_meta)
+
+    if not udc:
+        asset.udc_classification = None
+
+    if format.lower() == "json":
+        payload = {
+            "status": "success",
+            "source_file": str(file_or_title),
+            "identified": {
+                "title": asset.title,
+                "author": asset.author,
+                "series": asset.canonical_metadata.series_name,
+                "volume": asset.canonical_metadata.volume_number,
+                "year": asset.canonical_metadata.publication_year,
+                "isbn": asset.canonical_metadata.isbn,
+                "provider": asset.match_source,
+                "confidence": round(asset.confidence, 2),
+            },
+            "udc": (
+                {
+                    "notation": asset.udc_classification.notation,
+                    "description": asset.udc_classification.description,
+                    "confidence": asset.udc_classification.confidence,
+                    "source": asset.udc_classification.source,
+                }
+                if asset.udc_classification
+                else None
+            ),
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Book Identification Diagnostic ===",
+            f"Source:     {file_or_title}",
+            f"Title:      {asset.title}",
+            f"Author:     {asset.author}",
+            f"Year:       {asset.canonical_metadata.publication_year or 'Unknown'}",
+            f"ISBN:       {asset.canonical_metadata.isbn or 'None'}",
+            f"Provider:   {asset.match_source}",
+            f"Confidence: {asset.confidence:.2f}",
+        ]
+        if asset.udc_classification:
+            lines.extend(
+                [
+                    "UDC Classification:",
+                    f"  Notation:    {asset.udc_classification.notation}",
+                    f"  Description: {asset.udc_classification.description}",
+                    f"  Source:      {asset.udc_classification.source}",
+                ]
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@app.command("test-book-convert")
+def test_book_convert(
+    source_file: Path = typer.Argument(..., help="Path to source book file to convert"),
+    output_dir: Path | None = typer.Option(
+        None, "--output-dir", "-o", help="Where to place the converted test EPUB"
+    ),
+    engine: str = typer.Option(
+        "auto", "--engine", "-e", help="Preferred conversion engine: auto, calibre, python"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Check conversion feasibility without creating files"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
+) -> None:
+    """Diagnostic command to convert a single book file to standard EPUB."""
+    from media_cron.metadata.book_reader import BookMetadataReader
+    from media_cron.metadata.converter import (
+        ConversionFailedError,
+        ConverterUnavailableError,
+        default_converter_registry,
+    )
+    from media_cron.metadata.models import BookFormat
+
+    if not source_file.exists():
+        msg = f"Source file does not exist: {source_file}"
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg, "exit_code": EXIT_FATAL_ERROR}))
+        else:
+            typer.echo(f"Error: {msg}", err=True)
+        raise typer.Exit(code=EXIT_FATAL_ERROR)
+
+    fmt = BookFormat.from_path(source_file)
+    engine_map = {
+        "auto": "calibre",
+        "calibre": "calibre",
+        "python": "python_fallback",
+        "python_fallback": "python_fallback",
+    }
+    pref_engine = engine_map.get(engine.lower(), "calibre")
+
+    try:
+        converter = default_converter_registry.get_preferred_converter(
+            fmt, preferred_engine=pref_engine
+        )
+    except ConverterUnavailableError as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": str(e), "exit_code": 2}))
+        else:
+            typer.echo(f"Dependency Error: {e}", err=True)
+        raise typer.Exit(code=2) from e
+
+    out_folder = output_dir or source_file.parent
+    target_epub = out_folder / f"{source_file.stem}.epub"
+
+    if dry_run:
+        payload = {
+            "status": "simulated",
+            "source_file": str(source_file),
+            "target_file": str(target_epub),
+            "engine": converter.engine_name,
+            "dry_run": True,
+        }
+        if format.lower() == "json":
+            typer.echo(json.dumps(payload, indent=2))
+        else:
+            typer.echo(
+                f"[DRY-RUN] Would convert {source_file.name} to {target_epub} using {converter.engine_name}"
+            )
+        raise typer.Exit(code=EXIT_SUCCESS)
+
+    out_folder.mkdir(parents=True, exist_ok=True)
+    metadata = BookMetadataReader().read_metadata(source_file)
+    try:
+        converter.convert(source_path=source_file, target_path=target_epub, metadata=metadata)
+    except ConversionFailedError as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": str(e), "exit_code": 1}))
+        else:
+            typer.echo(f"Conversion failed: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    payload = {
+        "status": "success",
+        "source_file": str(source_file),
+        "target_file": str(target_epub),
+        "engine": converter.engine_name,
+        "output_size_bytes": target_epub.stat().st_size,
+    }
+    if format.lower() == "json":
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(
+            f"Successfully converted {source_file.name} -> {target_epub} ({converter.engine_name})"
+        )
+    raise typer.Exit(code=EXIT_SUCCESS)
 
 
 def main() -> None:

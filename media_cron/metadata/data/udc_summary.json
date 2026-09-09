@@ -1,0 +1,104 @@
+{
+  "classes": {
+    "0": {
+      "notation": "0",
+      "name": "Science and Knowledge. Organization. Computer Science. Information",
+      "keywords": ["computer science", "information technology", "cybernetics", "data", "bibliography", "computers", "programming"]
+    },
+    "1": {
+      "notation": "1",
+      "name": "Philosophy. Psychology",
+      "keywords": ["philosophy", "psychology", "ethics", "logic", "metaphysics"]
+    },
+    "2": {
+      "notation": "2",
+      "name": "Religion. Theology",
+      "keywords": ["religion", "theology", "mythology", "spirituality", "bible"]
+    },
+    "3": {
+      "notation": "3",
+      "name": "Social Sciences",
+      "keywords": ["social sciences", "sociology", "politics", "economics", "law", "education"]
+    },
+    "5": {
+      "notation": "5",
+      "name": "Mathematics and Natural Sciences",
+      "keywords": ["mathematics", "physics", "chemistry", "biology", "astronomy", "geology", "natural sciences", "science"]
+    },
+    "6": {
+      "notation": "6",
+      "name": "Applied Sciences. Medicine. Technology",
+      "keywords": ["medicine", "engineering", "technology", "agriculture", "management", "health", "applied sciences"]
+    },
+    "7": {
+      "notation": "7",
+      "name": "The Arts. Recreation. Entertainment. Sport",
+      "keywords": ["arts", "art", "music", "cinema", "photography", "sports", "games", "architecture"]
+    },
+    "8": {
+      "notation": "8",
+      "name": "Language. Linguistics. Literature",
+      "keywords": ["language", "linguistics", "literature", "poetry", "drama", "plays", "classics"]
+    },
+    "82-31": {
+      "notation": "82-31",
+      "name": "Literature - Fiction - Novels",
+      "parent": "8",
+      "keywords": ["fiction", "novel", "novels", "literature fiction", "prose", "general fiction"]
+    },
+    "82-311.9": {
+      "notation": "82-311.9",
+      "name": "Literature - Fiction - Science fiction",
+      "parent": "82-31",
+      "keywords": ["science fiction", "sci-fi", "space opera", "dystopian", "cyberpunk", "sf_space", "sf"]
+    },
+    "82-312.4": {
+      "notation": "82-312.4",
+      "name": "Literature - Fiction - Suspense, Thrillers, Mystery",
+      "parent": "82-31",
+      "keywords": ["mystery", "thriller", "suspense", "detective", "crime fiction", "crime"]
+    },
+    "82-312.9": {
+      "notation": "82-312.9",
+      "name": "Literature - Fiction - Fantasy",
+      "parent": "82-31",
+      "keywords": ["fantasy", "epic fantasy", "urban fantasy", "magic", "sword and sorcery", "high fantasy"]
+    },
+    "82-32": {
+      "notation": "82-32",
+      "name": "Literature - Short stories",
+      "parent": "8",
+      "keywords": ["short stories", "anthology", "collected stories"]
+    },
+    "82-93": {
+      "notation": "82-93",
+      "name": "Literature - Children's literature. Juvenile literature",
+      "parent": "8",
+      "keywords": ["children's literature", "juvenile fiction", "young adult", "ya fiction", "children", "kids"]
+    },
+    "9": {
+      "notation": "9",
+      "name": "Geography. Biography. History",
+      "keywords": ["history", "biography", "memoir", "geography", "travel", "autobiography", "historical"]
+    }
+  },
+  "dewey_crosswalk": {
+    "000": "0",
+    "004": "0",
+    "005": "0",
+    "100": "1",
+    "200": "2",
+    "300": "3",
+    "500": "5",
+    "510": "5",
+    "520": "5",
+    "530": "5",
+    "600": "6",
+    "610": "6",
+    "700": "7",
+    "800": "8",
+    "813": "82-31",
+    "823": "82-31",
+    "900": "9"
+  }
+}

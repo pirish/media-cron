@@ -10,20 +10,28 @@ Every external book metadata adapter must implement this protocol.
 from typing import Protocol, runtime_checkable
 from media_cron.metadata.models import MetadataMatch, ExternalProviderConfig
 
+
 class ProviderError(Exception):
     """Base error for external metadata providers."""
+
     pass
+
 
 class ProviderUnavailableError(ProviderError):
     """Raised when external provider endpoint is unreachable or DNS fails."""
+
     pass
+
 
 class ProviderTimeoutError(ProviderError):
     """Raised when request exceeds configured timeout."""
+
     pass
+
 
 class ProviderRateLimitError(ProviderError):
     """Raised when HTTP 429 Too Many Requests is received."""
+
     pass
 
 
@@ -44,16 +52,16 @@ class MetadataProviderProtocol(Protocol):
     ) -> list[MetadataMatch]:
         """
         Query the external service for matching book/audiobook candidates.
-        
+
         Args:
             title: Book or work title to search for.
             author: Optional author name to narrow the query.
             config: Provider configuration containing endpoints, timeouts, and credentials.
-            
+
         Returns:
             A list of MetadataMatch candidates ordered by provider relevance.
             Returns empty list if no matches are found.
-            
+
         Raises:
             ProviderUnavailableError: If network is unreachable or service returns 5xx.
             ProviderTimeoutError: If query exceeds config.timeout_seconds.
@@ -71,6 +79,7 @@ Central registry pattern for discovering and instantiating providers.
 ```python
 from typing import Type
 
+
 class MetadataProviderRegistry:
     """Registry mapping provider names to their adapter implementation classes."""
 
@@ -85,12 +94,15 @@ class MetadataProviderRegistry:
         """Retrieve a registered provider class. Raises KeyError if unknown."""
         provider = self._providers.get(name.lower())
         if not provider:
-            raise KeyError(f"Unknown metadata provider '{name}'. Registered: {list(self._providers.keys())}")
+            raise KeyError(
+                f"Unknown metadata provider '{name}'. Registered: {list(self._providers.keys())}"
+            )
         return provider
 
     def available_providers(self) -> list[str]:
         """Return names of all registered providers."""
         return sorted(list(self._providers.keys()))
+
 
 default_provider_registry = MetadataProviderRegistry()
 ```

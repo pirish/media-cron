@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable, Protocol
 from media_cron.models import DiscoveredItem
 
+
 class InputPlugin(Protocol):
     """Protocol for ingesting media candidates into the pipeline."""
 
@@ -25,14 +26,14 @@ class InputPlugin(Protocol):
     def discover(self, source_path: Path, staging_path: Path) -> Iterable[DiscoveredItem]:
         """
         Discovers items from source and moves/stages them into staging_path.
-        
+
         Args:
             source_path: The configured source directory or endpoint.
             staging_path: The dedicated staging directory where files must be staged.
-            
+
         Returns:
             An iterable of DiscoveredItem objects located in the staging directory.
-            
+
         Raises:
             PermissionError: If source or staging paths are inaccessible.
             FileNotFoundError: If source_path does not exist.
@@ -55,6 +56,7 @@ A `LookupPlugin` is responsible for parsing filenames, reading embedded metadata
 from typing import Protocol, Optional
 from media_cron.models import DiscoveredItem, MediaAsset
 
+
 class LookupPlugin(Protocol):
     """Protocol for extracting metadata and normalizing media assets."""
 
@@ -66,7 +68,7 @@ class LookupPlugin(Protocol):
     def can_handle(self, item: DiscoveredItem) -> bool:
         """
         Returns True if this plugin can parse metadata for the discovered item.
-        
+
         Args:
             item: The discovered item in staging.
         """
@@ -75,10 +77,10 @@ class LookupPlugin(Protocol):
     def enrich(self, item: DiscoveredItem) -> MediaAsset:
         """
         Extracts title, category, year/season/episode, audio/book tags, and quality.
-        
+
         Args:
             item: The discovered item to enrich.
-            
+
         Returns:
             A populated, validated MediaAsset instance.
         """
@@ -100,6 +102,7 @@ An `OutputPlugin` is responsible for executing filesystem operations to organize
 from typing import Protocol, List
 from media_cron.models import OperationPlan, OperationResult
 
+
 class OutputPlugin(Protocol):
     """Protocol for executing file placement, seeding, or pruning."""
 
@@ -111,10 +114,10 @@ class OutputPlugin(Protocol):
     def execute(self, plan: OperationPlan) -> OperationResult:
         """
         Executes a planned file operation (e.g. hardlink, atomic move, deletion).
-        
+
         Args:
             plan: The operation plan specifying source, destination, mode, and dry-run.
-            
+
         Returns:
             OperationResult indicating success, skipped status, or error details.
         """
@@ -132,6 +135,7 @@ class OutputPlugin(Protocol):
 
 ```python
 from typing import Dict, Type
+
 
 class PluginRegistry:
     """Central registry holding available and active plugins."""

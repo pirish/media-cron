@@ -76,6 +76,8 @@ class MediaAsset:
     bitrate_kbps: int | None = None
     confidence: float | None = None
     identification_source: str | None = None
+    udc_code: str | None = None
+    isbn: str | None = None
     is_valid: bool = True
     integrity_error: str | None = None
     subtitle_files: list[Path] = field(default_factory=list)
@@ -118,6 +120,7 @@ class BatchSummary:
     exit_code: int = EXIT_SUCCESS
     torrent_summary: dict | None = None
     audiobook_summary: dict | None = None
+    books_summary: dict | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -151,4 +154,6 @@ class BatchSummary:
             data["torrent_summary"] = self.torrent_summary
         if self.audiobook_summary is not None:
             data["audiobook_summary"] = self.audiobook_summary
+        if self.books_summary is not None:
+            data["books_summary"] = self.books_summary
         return data

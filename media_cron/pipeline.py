@@ -42,6 +42,7 @@ class Pipeline:
         self.registry = registry or default_registry
         self.target_torrent_identifier = target_torrent_identifier
         self._last_audiobook_summary: dict | None = None
+        self._last_books_summary: dict | None = None
 
     def _get_input_plugins(self) -> tuple[list[InputPlugin], TorrentInputPlugin | None]:
         plugins: list[InputPlugin] = []
@@ -175,10 +176,20 @@ class Pipeline:
 
         lookup_plugins = self.registry.get_lookups(self.config.plugins.lookups)
         for lk in lookup_plugins:
+            if hasattr(lk, "dry_run"):
+                lk.dry_run = self.config.general.dry_run
             if hasattr(lk, "configure"):
-                lk.configure(self.config.audiobook)
+                if getattr(lk, "plugin_name", "") == "book_meta" or (
+                    hasattr(lk, "identifier") and hasattr(lk.identifier, "total_books")
+                ):
+                    lk.configure(self.config.books)
+                else:
+                    lk.configure(self.config.audiobook)
             elif hasattr(lk, "identifier") and hasattr(lk.identifier, "config"):
-                lk.identifier.config = self.config.audiobook
+                if hasattr(lk.identifier, "total_books"):
+                    lk.identifier.config = self.config.books
+                else:
+                    lk.identifier.config = self.config.audiobook
         plans: list[OperationPlan] = []
         mode = TransferMode(self.config.general.mode)
 
@@ -188,17 +199,35 @@ class Pipeline:
 
             # 1. Check junk extensions
             if ext in self.config.general.junk_extensions:
-                plans.append(
-                    OperationPlan(
-                        op_type=OperationType.PURGE_JUNK,
-                        transfer_mode=mode,
-                        source_path=path,
-                        destination_path=None,
-                        reason=f"File extension '{ext}' in configured junk list",
-                        dry_run=True,
+                is_book = False
+                if (
+                    getattr(self.config, "books", None)
+                    and self.config.books.enabled
+                    and ext == ".txt"
+                ):
+                    for lk in lookup_plugins:
+                        if getattr(lk, "plugin_name", "") == "book_meta" and lk.can_handle(item):
+                            if path.stem.lower() not in (
+                                "readme",
+                                "instructions",
+                                "install",
+                                "read me",
+                                "info",
+                            ):
+                                is_book = True
+                                break
+                if not is_book:
+                    plans.append(
+                        OperationPlan(
+                            op_type=OperationType.PURGE_JUNK,
+                            transfer_mode=mode,
+                            source_path=path,
+                            destination_path=None,
+                            reason=f"File extension '{ext}' in configured junk list",
+                            dry_run=True,
+                        )
                     )
-                )
-                continue
+                    continue
 
             # 2. Check sample threshold
             if "sample" in path.name.lower() and ext in (".mkv", ".mp4", ".avi"):
@@ -243,7 +272,7 @@ class Pipeline:
                         OperationPlan(
                             op_type=OperationType.ORGANIZE,
                             transfer_mode=mode,
-                            source_path=path,
+                            source_path=asset.path,
                             destination_path=dest_path,
                             reason=f"Identified as {asset.category.value}: '{asset.clean_title}'",
                             dry_run=True,
@@ -332,14 +361,16 @@ class Pipeline:
                     )
                 )
 
-        # Collect audiobook telemetry summary
+        # Collect audiobook and book telemetry summary
         self._last_audiobook_summary = None
+        self._last_books_summary = None
         for lk in lookup_plugins:
             if hasattr(lk, "identifier") and hasattr(lk.identifier, "get_summary"):
                 summary_data = lk.identifier.get_summary()
                 if summary_data.get("total_audiobooks", 0) > 0:
                     self._last_audiobook_summary = summary_data
-                break
+                if summary_data.get("total_books", 0) > 0:
+                    self._last_books_summary = summary_data
 
         return plans, discovered_items, torrent_plugin
 
@@ -413,6 +444,7 @@ class Pipeline:
                 exit_code=EXIT_SUCCESS,
                 torrent_summary=torrent_summary,
                 audiobook_summary=self._last_audiobook_summary,
+                books_summary=self._last_books_summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -573,6 +605,7 @@ class Pipeline:
                     exit_code=exit_code,
                     torrent_summary=torrent_summary,
                     audiobook_summary=self._last_audiobook_summary,
+                    books_summary=self._last_books_summary,
                 )
         except LockContentionError as e:
             return BatchSummary(

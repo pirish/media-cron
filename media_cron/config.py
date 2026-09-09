@@ -97,6 +97,51 @@ def default_audiobook_providers() -> dict[str, ExternalProviderConfig]:
     }
 
 
+def default_book_providers() -> dict[str, ExternalProviderConfig]:
+    return {
+        "openlibrary": ExternalProviderConfig(
+            provider_name="openlibrary",
+            enabled=True,
+            priority=10,
+            base_url="https://openlibrary.org",
+            timeout_seconds=5.0,
+            rate_limit_delay=0.5,
+        ),
+    }
+
+
+@dataclass
+class UDCConfig:
+    enabled: bool = False
+    min_confidence: float = 0.70
+    summary_table_path: Path | None = None
+
+
+@dataclass
+class BookConversionConfig:
+    enabled: bool = False
+    preferred_engine: str = "calibre"
+    timeout_seconds: int = 120
+    retention_policy: str = "preserve"
+    archive_dir: Path | None = None
+    inject_metadata: bool = True
+
+
+@dataclass
+class BooksConfig:
+    enabled: bool = True
+    enable_external_lookup: bool = True
+    confidence_threshold: float = 0.85
+    udc_lookup: UDCConfig = field(default_factory=UDCConfig)
+    conversion: BookConversionConfig = field(default_factory=BookConversionConfig)
+    cache: MetadataCacheConfig = field(
+        default_factory=lambda: MetadataCacheConfig(
+            cache_file=Path(".media-cron-cache") / "book_cache.json"
+        )
+    )
+    providers: dict[str, ExternalProviderConfig] = field(default_factory=default_book_providers)
+
+
 @dataclass
 class AudiobookConfig:
     enable_external_lookup: bool = True
@@ -117,6 +162,7 @@ class MediaCronConfig:
     hybrid_ingest: bool = False
     torrent_clients: dict[str, TorrentClientConfig] = field(default_factory=dict)
     audiobook: AudiobookConfig = field(default_factory=AudiobookConfig)
+    books: BooksConfig = field(default_factory=BooksConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -252,6 +298,63 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.audiobook.providers[pname] = prov_cfg
 
+            if "books" in data and isinstance(data["books"], dict):
+                bk = data["books"]
+                if "enabled" in bk:
+                    cfg.books.enabled = bool(bk["enabled"])
+                if "enable_external_lookup" in bk:
+                    cfg.books.enable_external_lookup = bool(bk["enable_external_lookup"])
+                if "confidence_threshold" in bk:
+                    cfg.books.confidence_threshold = float(bk["confidence_threshold"])
+                if "udc_lookup" in bk and isinstance(bk["udc_lookup"], dict):
+                    udc = bk["udc_lookup"]
+                    if "enabled" in udc:
+                        cfg.books.udc_lookup.enabled = bool(udc["enabled"])
+                    if "min_confidence" in udc:
+                        cfg.books.udc_lookup.min_confidence = float(udc["min_confidence"])
+                    if "summary_table_path" in udc and udc["summary_table_path"]:
+                        cfg.books.udc_lookup.summary_table_path = Path(udc["summary_table_path"])
+                if "conversion" in bk and isinstance(bk["conversion"], dict):
+                    conv = bk["conversion"]
+                    if "enabled" in conv:
+                        cfg.books.conversion.enabled = bool(conv["enabled"])
+                    if "preferred_engine" in conv:
+                        cfg.books.conversion.preferred_engine = str(conv["preferred_engine"])
+                    if "timeout_seconds" in conv:
+                        cfg.books.conversion.timeout_seconds = int(conv["timeout_seconds"])
+                    if "retention_policy" in conv:
+                        cfg.books.conversion.retention_policy = str(conv["retention_policy"])
+                    if "archive_dir" in conv and conv["archive_dir"]:
+                        cfg.books.conversion.archive_dir = Path(conv["archive_dir"])
+                    if "inject_metadata" in conv:
+                        cfg.books.conversion.inject_metadata = bool(conv["inject_metadata"])
+                if "cache" in bk and isinstance(bk["cache"], dict):
+                    c = bk["cache"]
+                    if "enabled" in c:
+                        cfg.books.cache.enabled = bool(c["enabled"])
+                    if "ttl_seconds" in c:
+                        cfg.books.cache.ttl_seconds = int(c["ttl_seconds"])
+                    if "cache_file" in c and c["cache_file"]:
+                        cfg.books.cache.cache_file = Path(c["cache_file"])
+                if "providers" in bk and isinstance(bk["providers"], dict):
+                    for pname, pdata in bk["providers"].items():
+                        prov_cfg = cfg.books.providers.get(
+                            pname, ExternalProviderConfig(provider_name=pname)
+                        )
+                        if "enabled" in pdata:
+                            prov_cfg.enabled = bool(pdata["enabled"])
+                        if "priority" in pdata:
+                            prov_cfg.priority = int(pdata["priority"])
+                        if "base_url" in pdata:
+                            prov_cfg.base_url = str(pdata["base_url"])
+                        if "api_key" in pdata:
+                            prov_cfg.api_key = pdata["api_key"]
+                        if "timeout_seconds" in pdata:
+                            prov_cfg.timeout_seconds = float(pdata["timeout_seconds"])
+                        if "rate_limit_delay" in pdata:
+                            prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
+                        cfg.books.providers[pname] = prov_cfg
+
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
         if env_source:
@@ -361,5 +464,46 @@ class MediaCronConfig:
         if env_aud_timeout is not None:
             if "audnexus" in cfg.audiobook.providers:
                 cfg.audiobook.providers["audnexus"].timeout_seconds = float(env_aud_timeout)
+
+        # Books environment overrides
+        env_books_enabled = os.getenv("MEDIA_CRON_BOOKS_ENABLED")
+        if env_books_enabled is not None:
+            cfg.books.enabled = env_books_enabled.lower() in ("true", "1", "yes")
+
+        env_books_lookup = os.getenv("MEDIA_CRON_BOOKS_EXTERNAL_LOOKUP")
+        if env_books_lookup is not None:
+            cfg.books.enable_external_lookup = env_books_lookup.lower() in ("true", "1", "yes")
+
+        env_books_thresh = os.getenv("MEDIA_CRON_BOOKS_CONFIDENCE_THRESHOLD")
+        if env_books_thresh is not None:
+            cfg.books.confidence_threshold = float(env_books_thresh)
+
+        env_books_udc = os.getenv("MEDIA_CRON_BOOKS_UDC_ENABLED")
+        if env_books_udc is not None:
+            cfg.books.udc_lookup.enabled = env_books_udc.lower() in ("true", "1", "yes")
+
+        env_books_conv = os.getenv("MEDIA_CRON_BOOKS_CONVERT_EPUB")
+        if env_books_conv is not None:
+            cfg.books.conversion.enabled = env_books_conv.lower() in ("true", "1", "yes")
+
+        env_books_engine = os.getenv("MEDIA_CRON_BOOKS_CONVERSION_ENGINE")
+        if env_books_engine is not None:
+            cfg.books.conversion.preferred_engine = env_books_engine
+
+        env_books_retention = os.getenv("MEDIA_CRON_BOOKS_RETENTION_POLICY")
+        if env_books_retention is not None:
+            cfg.books.conversion.retention_policy = env_books_retention
+
+        env_books_archive = os.getenv("MEDIA_CRON_BOOKS_ARCHIVE_DIR")
+        if env_books_archive is not None:
+            cfg.books.conversion.archive_dir = Path(env_books_archive)
+
+        env_books_cache_file = os.getenv("MEDIA_CRON_BOOKS_CACHE_FILE")
+        if env_books_cache_file is not None:
+            cfg.books.cache.cache_file = Path(env_books_cache_file)
+
+        env_books_cache_ttl = os.getenv("MEDIA_CRON_BOOKS_CACHE_TTL")
+        if env_books_cache_ttl is not None:
+            cfg.books.cache.ttl_seconds = int(env_books_cache_ttl)
 
         return cfg

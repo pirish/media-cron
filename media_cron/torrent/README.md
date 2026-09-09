@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 from media_cron.torrent.models import TorrentItem
 
+
 @runtime_checkable
 class TorrentClientProtocol(Protocol):
     @property
@@ -63,6 +64,7 @@ To register a new client adapter, call `TorrentClientRegistry.register()` during
 from media_cron.torrent.base import TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig
 
+
 class TransmissionClient:
     def __init__(self, config: TorrentClientConfig):
         self.config = config
@@ -72,6 +74,7 @@ class TransmissionClient:
         return "transmission"
 
     # ... implement protocol methods ...
+
 
 # Register client adapter
 TorrentClientRegistry.register("transmission", TransmissionClient)
