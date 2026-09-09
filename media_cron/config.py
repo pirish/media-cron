@@ -50,7 +50,9 @@ class GeneralConfig:
 @dataclass
 class PluginsConfig:
     input: str = "directory_scanner"
-    lookups: list[str] = field(default_factory=lambda: ["scene_video", "audio_tag", "book_meta"])
+    lookups: list[str] = field(
+        default_factory=lambda: ["scene_video", "music", "audio_tag", "book_meta"]
+    )
     outputs: list[str] = field(
         default_factory=lambda: ["library_organizer", "seed_relocator", "junk_cleaner"]
     )
@@ -152,6 +154,51 @@ class AudiobookConfig:
     )
 
 
+def default_music_providers() -> dict[str, ExternalProviderConfig]:
+    return {
+        "musicbrainz": ExternalProviderConfig(
+            provider_name="musicbrainz",
+            enabled=True,
+            priority=10,
+            base_url="https://musicbrainz.org/ws/2",
+            timeout_seconds=10.0,
+            rate_limit_delay=1.0,
+        ),
+        "discogs": ExternalProviderConfig(
+            provider_name="discogs",
+            enabled=False,
+            priority=20,
+            base_url="https://api.discogs.com",
+            timeout_seconds=10.0,
+            rate_limit_delay=1.0,
+        ),
+    }
+
+
+@dataclass
+class MusicConfig:
+    enabled: bool = True
+    workflow_mode: str = "direct"  # "spool" | "direct" | "hybrid"
+    spool_dir: Path | None = None
+    post_ingest_command: str | None = None
+    post_command_timeout_seconds: int = 120
+    library_dir: str = "Music"
+    path_template: str = "{artist}/{album} ({year})/{track:02d} - {title}.{ext}"
+    compilation_artist: str = "Various Artists"
+    enable_external_lookup: bool = False
+    provider: str = "musicbrainz"
+    discogs_token: str | None = None
+    confidence_threshold: float = 0.85
+    hardlink_with_copy_fallback: bool = True
+    preserve_companions: bool = True
+    cache: MetadataCacheConfig = field(
+        default_factory=lambda: MetadataCacheConfig(
+            cache_file=Path(".media-cron-cache") / "music_cache.json"
+        )
+    )
+    providers: dict[str, ExternalProviderConfig] = field(default_factory=default_music_providers)
+
+
 @dataclass
 class MediaCronConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
@@ -163,6 +210,7 @@ class MediaCronConfig:
     torrent_clients: dict[str, TorrentClientConfig] = field(default_factory=dict)
     audiobook: AudiobookConfig = field(default_factory=AudiobookConfig)
     books: BooksConfig = field(default_factory=BooksConfig)
+    music: MusicConfig = field(default_factory=MusicConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -355,6 +403,63 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.books.providers[pname] = prov_cfg
 
+            if "music" in data and isinstance(data["music"], dict):
+                m = data["music"]
+                if "enabled" in m:
+                    cfg.music.enabled = bool(m["enabled"])
+                if "workflow_mode" in m:
+                    cfg.music.workflow_mode = str(m["workflow_mode"])
+                if "spool_dir" in m and m["spool_dir"]:
+                    cfg.music.spool_dir = Path(m["spool_dir"])
+                if "post_ingest_command" in m:
+                    cfg.music.post_ingest_command = m["post_ingest_command"]
+                if "post_command_timeout_seconds" in m:
+                    cfg.music.post_command_timeout_seconds = int(m["post_command_timeout_seconds"])
+                if "library_dir" in m:
+                    cfg.music.library_dir = str(m["library_dir"])
+                if "path_template" in m:
+                    cfg.music.path_template = str(m["path_template"])
+                if "compilation_artist" in m:
+                    cfg.music.compilation_artist = str(m["compilation_artist"])
+                if "enable_external_lookup" in m:
+                    cfg.music.enable_external_lookup = bool(m["enable_external_lookup"])
+                if "provider" in m:
+                    cfg.music.provider = str(m["provider"])
+                if "discogs_token" in m:
+                    cfg.music.discogs_token = m["discogs_token"]
+                if "confidence_threshold" in m:
+                    cfg.music.confidence_threshold = float(m["confidence_threshold"])
+                if "hardlink_with_copy_fallback" in m:
+                    cfg.music.hardlink_with_copy_fallback = bool(m["hardlink_with_copy_fallback"])
+                if "preserve_companions" in m:
+                    cfg.music.preserve_companions = bool(m["preserve_companions"])
+                if "cache" in m and isinstance(m["cache"], dict):
+                    c = m["cache"]
+                    if "enabled" in c:
+                        cfg.music.cache.enabled = bool(c["enabled"])
+                    if "ttl_seconds" in c:
+                        cfg.music.cache.ttl_seconds = int(c["ttl_seconds"])
+                    if "cache_file" in c and c["cache_file"]:
+                        cfg.music.cache.cache_file = Path(c["cache_file"])
+                if "providers" in m and isinstance(m["providers"], dict):
+                    for pname, pdata in m["providers"].items():
+                        prov_cfg = cfg.music.providers.get(
+                            pname, ExternalProviderConfig(provider_name=pname)
+                        )
+                        if "enabled" in pdata:
+                            prov_cfg.enabled = bool(pdata["enabled"])
+                        if "priority" in pdata:
+                            prov_cfg.priority = int(pdata["priority"])
+                        if "base_url" in pdata:
+                            prov_cfg.base_url = str(pdata["base_url"])
+                        if "api_key" in pdata:
+                            prov_cfg.api_key = pdata["api_key"]
+                        if "timeout_seconds" in pdata:
+                            prov_cfg.timeout_seconds = float(pdata["timeout_seconds"])
+                        if "rate_limit_delay" in pdata:
+                            prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
+                        cfg.music.providers[pname] = prov_cfg
+
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
         if env_source:
@@ -505,5 +610,52 @@ class MediaCronConfig:
         env_books_cache_ttl = os.getenv("MEDIA_CRON_BOOKS_CACHE_TTL")
         if env_books_cache_ttl is not None:
             cfg.books.cache.ttl_seconds = int(env_books_cache_ttl)
+
+        # Music environment overrides
+        env_music_enabled = os.getenv("MEDIA_CRON_MUSIC_ENABLED")
+        if env_music_enabled is not None:
+            cfg.music.enabled = env_music_enabled.lower() in ("true", "1", "yes")
+
+        env_music_mode = os.getenv("MEDIA_CRON_MUSIC_MODE")
+        if env_music_mode is not None:
+            cfg.music.workflow_mode = env_music_mode.lower()
+
+        env_music_spool_dir = os.getenv("MEDIA_CRON_MUSIC_SPOOL_DIR")
+        if env_music_spool_dir is not None:
+            cfg.music.spool_dir = Path(env_music_spool_dir)
+
+        env_music_post_cmd = os.getenv("MEDIA_CRON_MUSIC_POST_COMMAND")
+        if env_music_post_cmd is not None:
+            cfg.music.post_ingest_command = env_music_post_cmd
+
+        env_music_lookup = os.getenv("MEDIA_CRON_MUSIC_LOOKUP")
+        if env_music_lookup is not None:
+            cfg.music.enable_external_lookup = env_music_lookup.lower() in ("true", "1", "yes")
+
+        env_music_provider = os.getenv("MEDIA_CRON_MUSIC_PROVIDER")
+        if env_music_provider is not None:
+            cfg.music.provider = env_music_provider.lower()
+
+        env_discogs_token = os.getenv("MEDIA_CRON_DISCOGS_TOKEN")
+        if env_discogs_token is not None:
+            cfg.music.discogs_token = env_discogs_token
+
+        env_music_thresh = os.getenv("MEDIA_CRON_MUSIC_CONFIDENCE_THRESHOLD")
+        if env_music_thresh is not None:
+            cfg.music.confidence_threshold = float(env_music_thresh)
+
+        env_music_companions = os.getenv("MEDIA_CRON_MUSIC_PRESERVE_COMPANIONS")
+        if env_music_companions is not None:
+            cfg.music.preserve_companions = env_music_companions.lower() in ("true", "1", "yes")
+
+        # Dynamic default resolution: if spool_dir is set and mode wasn't explicitly given
+        is_mode_explicit = env_music_mode is not None or (
+            "data" in locals()
+            and isinstance(data, dict)
+            and "music" in data
+            and "workflow_mode" in data["music"]
+        )
+        if cfg.music.spool_dir and not is_mode_explicit:
+            cfg.music.workflow_mode = "spool"
 
         return cfg

@@ -8,6 +8,7 @@ import media_cron.plugins.input.directory  # noqa: F401
 import media_cron.plugins.input.torrent  # noqa: F401
 import media_cron.plugins.lookup.audio  # noqa: F401
 import media_cron.plugins.lookup.book  # noqa: F401
+import media_cron.plugins.lookup.music  # noqa: F401
 import media_cron.plugins.lookup.video  # noqa: F401
 import media_cron.plugins.output.cleaner  # noqa: F401
 import media_cron.plugins.output.organizer  # noqa: F401
@@ -88,6 +89,21 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Cache Hits:            {bsum.get('cache_hits', 0)}",
                 f"Cache Misses:          {bsum.get('cache_misses', 0)}",
                 f"Average Confidence:    {bsum.get('average_confidence', 0.0)}",
+            ]
+        )
+    if summary.music_summary:
+        msum = summary.music_summary
+        lines.extend(
+            [
+                "--- Music Telemetry ---",
+                f"Total Tracks:       {msum.get('total_tracks', 0)}",
+                f"Releases Bundled:   {msum.get('releases_bundled', 0)}",
+                f"Spooled Releases:   {msum.get('spooled_releases', 0)}",
+                f"Organized Tracks:   {msum.get('organized_tracks', 0)}",
+                f"External Matches:   {msum.get('external_matches', 0)}",
+                f"Average Confidence: {msum.get('average_confidence', 0.0)}",
+                f"Post Commands Run:  {msum.get('post_commands_run', 0)}",
+                f"Errors:             {msum.get('errors', 0)}",
             ]
         )
     lines.append("--- Operations ---")
@@ -193,6 +209,41 @@ def run_command(
         "--archive-dir",
         help="Target archive directory when retention is 'archive'",
     ),
+    music: bool | None = typer.Option(
+        None,
+        "--music/--no-music",
+        help="Enable or disable music processing",
+    ),
+    music_mode: str | None = typer.Option(
+        None,
+        "--music-mode",
+        help="Operational workflow mode: spool, direct, hybrid",
+    ),
+    music_spool_dir: Path | None = typer.Option(
+        None,
+        "--music-spool-dir",
+        help="Drop/spool directory where releases are deposited for external managers like beets",
+    ),
+    music_post_command: str | None = typer.Option(
+        None,
+        "--music-post-command",
+        help="Optional shell command hook executed upon successful release drop",
+    ),
+    music_lookup: bool | None = typer.Option(
+        None,
+        "--music-lookup/--no-music-lookup",
+        help="Enable or disable online music catalog lookup",
+    ),
+    music_provider: str | None = typer.Option(
+        None,
+        "--music-provider",
+        help="Primary online catalog provider: musicbrainz, discogs",
+    ),
+    discogs_token: str | None = typer.Option(
+        None,
+        "--discogs-token",
+        help="Optional personal access token for Discogs API queries",
+    ),
     format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
     config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
@@ -258,6 +309,24 @@ def run_command(
     if archive_dir:
         cfg.books.conversion.archive_dir = archive_dir
 
+    # Music CLI overrides
+    if music is not None:
+        cfg.music.enabled = music
+    if music_mode is not None:
+        cfg.music.workflow_mode = music_mode.lower()
+    if music_spool_dir is not None:
+        cfg.music.spool_dir = music_spool_dir
+        if music_mode is None and cfg.music.workflow_mode == "direct":
+            cfg.music.workflow_mode = "spool"
+    if music_post_command is not None:
+        cfg.music.post_ingest_command = music_post_command
+    if music_lookup is not None:
+        cfg.music.enable_external_lookup = music_lookup
+    if music_provider is not None:
+        cfg.music.primary_provider = music_provider.lower()
+    if discogs_token is not None:
+        cfg.music.discogs_token = discogs_token
+
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:
             cfg.torrent_clients[cfg.active_torrent_client] = TorrentClientConfig(
@@ -266,7 +335,7 @@ def run_command(
         cfg.torrent_clients[cfg.active_torrent_client].seeding.mode = seeding_mode
 
     # 3. Validate paths
-    if not cfg.paths.destination_dir:
+    if not cfg.paths.destination_dir and not (cfg.music.enabled and cfg.music.spool_dir):
         msg = "Error: --destination must be specified via CLI or config file."
         if format.lower() == "json":
             typer.echo(json.dumps({"exit_code": EXIT_CONFIG_ERROR, "errors": [msg]}))
@@ -684,6 +753,260 @@ def test_book_convert(
             f"Successfully converted {source_file.name} -> {target_epub} ({converter.engine_name})"
         )
     raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@app.command("test-music-identify")
+def test_music_identify(
+    path: Path = typer.Argument(..., help="Path to an audio track or directory release bundle"),
+    lookup: bool = typer.Option(
+        False, "--lookup/--no-lookup", help="Enable/disable external catalog query"
+    ),
+    format: str = typer.Option(
+        "text", "--format", "-f", help="Output display format: table/text or json"
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Diagnostic command to extract metadata and test external catalog identification."""
+    from media_cron.metadata.music_bundler import MusicReleaseBundleAggregator
+    from media_cron.metadata.music_identifier import MusicIdentifier
+    from media_cron.metadata.music_reader import MusicMetadataReader
+
+    cfg = MediaCronConfig.load(config_path=config)
+    if lookup:
+        cfg.music.enable_external_lookup = True
+
+    if not path.exists():
+        msg = f"Path '{path}' not found."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    reader = MusicMetadataReader()
+    bundler = MusicReleaseBundleAggregator()
+
+    track = None
+    bundle = None
+
+    if path.is_file():
+        track = reader.read(path)
+        bundle = bundler.get_bundle(path)
+    else:
+        bundles = bundler.aggregate(path)
+        bundle = bundles[0] if bundles else None
+        track = bundle.tracks[0] if bundle and bundle.tracks else None
+
+    catalog_match = None
+    if lookup:
+        identifier = MusicIdentifier(config=cfg.music)
+        query_artist = (
+            (track.artist if track and track.artist != "Unknown Artist" else None)
+            or (bundle.album_artist if bundle and bundle.album_artist != "Unknown Artist" else None)
+            or ""
+        )
+        query_album = (
+            (track.album if track and track.album != "Unknown Album" else None)
+            or (bundle.album_title if bundle and bundle.album_title != "Unknown Album" else None)
+            or ""
+        )
+        track_count = len(bundle.tracks) if bundle and bundle.tracks else None
+        year = (track.year if track else None) or (bundle.year if bundle else None)
+
+        if query_artist or query_album:
+            catalog_match = identifier.identify(
+                artist=query_artist,
+                album=query_album,
+                track_count=track_count,
+                year=year,
+            )
+
+    if format.lower() == "json":
+        payload = {
+            "status": "success",
+            "path": str(path),
+            "track": (
+                {
+                    "title": track.title,
+                    "artist": track.artist,
+                    "album": track.album,
+                    "album_artist": track.album_artist,
+                    "track_number": track.track_number,
+                    "disc_number": track.disc_number,
+                    "year": track.year,
+                    "genre": track.genre,
+                    "format": track.format.value
+                    if hasattr(track.format, "value")
+                    else str(track.format),
+                    "bitrate_kbps": track.bitrate_kbps,
+                }
+                if track
+                else None
+            ),
+            "release_bundle": (
+                {
+                    "album_title": bundle.album_title,
+                    "album_artist": bundle.album_artist,
+                    "year": bundle.year,
+                    "total_tracks": len(bundle.tracks),
+                    "total_discs": bundle.total_discs,
+                    "companion_files": [c.path.name for c in bundle.companion_assets],
+                }
+                if bundle
+                else None
+            ),
+            "catalog_match": (
+                {
+                    "title": catalog_match.title,
+                    "artist": catalog_match.artist,
+                    "release_id": catalog_match.release_id,
+                    "provider": catalog_match.provider,
+                    "confidence": round(catalog_match.confidence, 2),
+                    "year": catalog_match.year,
+                    "track_count": catalog_match.track_count,
+                }
+                if catalog_match
+                else None
+            ),
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Music Identification Diagnostic ===",
+            f"Path:           {path}",
+        ]
+        if track:
+            lines.extend(
+                [
+                    f"Title:          {track.title}",
+                    f"Artist:         {track.artist}",
+                    f"Album:          {track.album}",
+                    f"Year:           {track.year or 'Unknown'}",
+                    f"Format:         {track.format.value if hasattr(track.format, 'value') else track.format}",
+                ]
+            )
+        if bundle:
+            lines.extend(
+                [
+                    "Release Bundle:",
+                    f"  Album:        {bundle.album_title}",
+                    f"  Artist:       {bundle.album_artist}",
+                    f"  Tracks:       {len(bundle.tracks)}",
+                    f"  Discs:        {bundle.total_discs}",
+                    f"  Companions:   {', '.join([c.path.name for c in bundle.companion_assets]) or 'None'}",
+                ]
+            )
+        if catalog_match:
+            lines.extend(
+                [
+                    "Catalog Match:",
+                    f"  Title:        {catalog_match.title}",
+                    f"  Artist:       {catalog_match.artist}",
+                    f"  Release ID:   {catalog_match.release_id}",
+                    f"  Provider:     {catalog_match.provider}",
+                    f"  Confidence:   {catalog_match.confidence:.2f}",
+                ]
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@app.command("test-music-spool")
+def test_music_spool(
+    source_path: Path = typer.Argument(..., help="Directory containing the release to spool"),
+    spool_dir: Path = typer.Option(..., "--spool-dir", help="Target drop folder destination"),
+    post_command: str | None = typer.Option(
+        None, "--post-command", help="Shell command template to execute"
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--no-dry-run", help="Simulate deposition without copying/moving files"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+) -> None:
+    """Diagnostic command to simulate or perform atomic drop-folder release deposition."""
+    from media_cron.metadata.music_bundler import MusicReleaseBundleAggregator
+    from media_cron.metadata.music_spooler import MusicSpoolEngine
+
+    if not source_path.exists():
+        msg = f"Source directory '{source_path}' does not exist."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    bundler = MusicReleaseBundleAggregator()
+    bundle = bundler.get_bundle(source_path)
+    if not bundle:
+        bundles = bundler.aggregate(source_path)
+        bundle = bundles[0] if bundles else None
+
+    if not bundle:
+        msg = f"No music release bundle found in '{source_path}'."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    spooler = MusicSpoolEngine()
+    target_release_path = spool_dir / bundle.root_path.name
+    files_transferred = [str(t.path.relative_to(bundle.root_path)) for t in bundle.tracks] + [
+        str(c.path.relative_to(bundle.root_path)) for c in bundle.companion_assets
+    ]
+
+    post_cmd_rendered = (
+        post_command.replace("{release_path}", str(target_release_path)) if post_command else None
+    )
+
+    if dry_run:
+        status = "success"
+        post_cmd_exit = 0 if post_command else None
+    else:
+        spool_res = spooler.spool_release(
+            bundle=bundle,
+            spool_dir=spool_dir,
+            post_command=post_command,
+            dry_run=False,
+        )
+        status = "success" if spool_res.success else "failed"
+        post_cmd_exit = spool_res.post_command_exit_code
+
+    if format.lower() == "json":
+        payload = {
+            "status": status,
+            "dry_run": dry_run,
+            "source_dir": str(source_path),
+            "spool_dir": str(spool_dir),
+            "target_release_path": str(target_release_path),
+            "files_transferred": files_transferred,
+            "post_command": post_cmd_rendered,
+            "post_command_exit_code": post_cmd_exit,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Music Spool Diagnostic ===",
+            f"Status:         {status}",
+            f"Mode:           {'[DRY-RUN SIMULATION]' if dry_run else '[LIVE EXECUTION]'}",
+            f"Source Dir:     {source_path}",
+            f"Spool Dir:      {spool_dir}",
+            f"Target Release: {target_release_path}",
+            f"Files ({len(files_transferred)}):",
+        ]
+        for f in files_transferred:
+            lines.append(f"  {f}")
+        if post_cmd_rendered:
+            lines.extend(
+                [
+                    f"Post Command:   {post_cmd_rendered}",
+                    f"Exit Code:      {post_cmd_exit if post_cmd_exit is not None else 'N/A'}",
+                ]
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS if status == "success" else 1)
 
 
 def main() -> None:

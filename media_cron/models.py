@@ -82,6 +82,7 @@ class MediaAsset:
     integrity_error: str | None = None
     subtitle_files: list[Path] = field(default_factory=list)
     ancillary_files: list[Path] = field(default_factory=list)
+    destination_rel_path: Path | None = None
 
 
 @dataclass
@@ -121,6 +122,7 @@ class BatchSummary:
     torrent_summary: dict | None = None
     audiobook_summary: dict | None = None
     books_summary: dict | None = None
+    music_summary: dict | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -156,4 +158,6 @@ class BatchSummary:
             data["audiobook_summary"] = self.audiobook_summary
         if self.books_summary is not None:
             data["books_summary"] = self.books_summary
+        if self.music_summary is not None:
+            data["music_summary"] = self.music_summary
         return data

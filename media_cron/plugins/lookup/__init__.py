@@ -1,3 +1,3 @@
-from media_cron.plugins.lookup import audio, book, video
+from media_cron.plugins.lookup import audio, book, music, video
 
-__all__ = ["audio", "book", "video"]
+__all__ = ["audio", "book", "music", "video"]

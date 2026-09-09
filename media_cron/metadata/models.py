@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -17,7 +19,7 @@ class BookFormat(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def from_path(cls, path: Path) -> "BookFormat":
+    def from_path(cls, path: Path) -> BookFormat:
         suffix = path.suffix.lower()
         if suffix == ".epub":
             return cls.EPUB
@@ -71,7 +73,7 @@ class UDCClassification:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UDCClassification":
+    def from_dict(cls, data: dict[str, Any]) -> UDCClassification:
         return cls(
             notation=data.get("notation", ""),
             description=data.get("description", ""),
@@ -119,7 +121,7 @@ class MetadataMatch:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MetadataMatch":
+    def from_dict(cls, data: dict[str, Any]) -> MetadataMatch:
         udc_data = data.get("udc_classification")
         udc_obj = UDCClassification.from_dict(udc_data) if udc_data else None
         return cls(
@@ -177,7 +179,7 @@ class MetadataCacheEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MetadataCacheEntry":
+    def from_dict(cls, data: dict[str, Any]) -> MetadataCacheEntry:
         match_data = data.get("match")
         match_obj = MetadataMatch.from_dict(match_data) if match_data else None
         return cls(
@@ -188,6 +190,48 @@ class MetadataCacheEntry:
             created_at=float(data.get("created_at", time.time())),
             ttl_seconds=int(data.get("ttl_seconds", 2592000)),
             match=match_obj,
+        )
+
+
+@dataclass
+class MusicCacheEntry:
+    cache_key: str
+    provider: str
+    artist: str
+    album: str
+    created_at: float = field(default_factory=time.time)
+    ttl_seconds: int = 2592000
+    matches: list[MusicCatalogMatch] = field(default_factory=list)
+
+    def is_expired(self, current_time: float | None = None) -> bool:
+        now = current_time if current_time is not None else time.time()
+        return (now - self.created_at) > self.ttl_seconds
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cache_key": self.cache_key,
+            "provider": self.provider,
+            "artist": self.artist,
+            "album": self.album,
+            "created_at": self.created_at,
+            "ttl_seconds": self.ttl_seconds,
+            "matches": [m.to_dict() for m in self.matches],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MusicCacheEntry:
+        matches_data = data.get("matches", [])
+        if not matches_data and data.get("match"):
+            matches_data = [data["match"]]
+        matches_obj = [MusicCatalogMatch.from_dict(m) for m in matches_data]
+        return cls(
+            cache_key=data["cache_key"],
+            provider=data["provider"],
+            artist=data.get("artist", ""),
+            album=data.get("album", ""),
+            created_at=float(data.get("created_at", time.time())),
+            ttl_seconds=int(data.get("ttl_seconds", 2592000)),
+            matches=matches_obj,
         )
 
 
@@ -225,7 +269,7 @@ class BookMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BookMetadata":
+    def from_dict(cls, data: dict[str, Any]) -> BookMetadata:
         return cls(
             title=data.get("title", ""),
             author=data.get("author", ""),
@@ -316,3 +360,165 @@ class BookAsset:
     @property
     def provider(self) -> str:
         return self.match_source
+
+
+# ==============================================================================
+# Music Subsystem Models
+# ==============================================================================
+
+
+class MusicWorkflowMode(StrEnum):
+    SPOOL = "spool"
+    DIRECT = "direct"
+    HYBRID = "hybrid"
+
+
+class MusicFormat(StrEnum):
+    MP3 = "mp3"
+    FLAC = "flac"
+    M4A = "m4a"
+    OGG = "ogg"
+    OPUS = "opus"
+    WAV = "wav"
+    ALAC = "alac"
+    AIFF = "aiff"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_path(cls, path: Path) -> MusicFormat:
+        ext = path.suffix.lower()
+        if ext == ".mp3":
+            return cls.MP3
+        elif ext == ".flac":
+            return cls.FLAC
+        elif ext in (".m4a", ".aac"):
+            return cls.M4A
+        elif ext == ".ogg":
+            return cls.OGG
+        elif ext == ".opus":
+            return cls.OPUS
+        elif ext == ".wav":
+            return cls.WAV
+        elif ext == ".alac":
+            return cls.ALAC
+        elif ext in (".aiff", ".aif"):
+            return cls.AIFF
+        return cls.UNKNOWN
+
+
+class CompanionAssetType(StrEnum):
+    COVER_ART = "cover_art"
+    CUE_SHEET = "cue_sheet"
+    RIP_LOG = "rip_log"
+    PLAYLIST = "playlist"
+    OTHER = "other"
+
+    @classmethod
+    def from_path(cls, path: Path) -> CompanionAssetType:
+        ext = path.suffix.lower()
+        name = path.name.lower()
+        if ext in (".jpg", ".jpeg", ".png", ".webp") or any(
+            k in name for k in ("cover", "folder", "front", "artwork")
+        ):
+            return cls.COVER_ART
+        elif ext == ".cue":
+            return cls.CUE_SHEET
+        elif ext in (".log", ".accurip"):
+            return cls.RIP_LOG
+        elif ext in (".m3u", ".m3u8"):
+            return cls.PLAYLIST
+        return cls.OTHER
+
+
+@dataclass
+class MusicTrack:
+    path: Path
+    format: MusicFormat
+    file_size: int
+    title: str
+    artist: str
+    album: str
+    album_artist: str | None = None
+    track_number: int | None = None
+    disc_number: int | None = None
+    year: int | None = None
+    genre: str | None = None
+    duration_seconds: float | None = None
+    bitrate_kbps: int | None = None
+    musicbrainz_track_id: str | None = None
+    musicbrainz_release_id: str | None = None
+    is_valid: bool = True
+
+
+@dataclass
+class MusicCompanionAsset:
+    path: Path
+    asset_type: CompanionAssetType
+    file_size: int
+
+
+@dataclass
+class MusicCatalogMatch:
+    title: str
+    artist: str
+    release_id: str
+    provider: str
+    confidence: float
+    year: int | None = None
+    track_count: int | None = None
+    tracks: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "artist": self.artist,
+            "release_id": self.release_id,
+            "provider": self.provider,
+            "confidence": self.confidence,
+            "year": self.year,
+            "track_count": self.track_count,
+            "tracks": list(self.tracks),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MusicCatalogMatch:
+        return cls(
+            title=data.get("title", ""),
+            artist=data.get("artist", ""),
+            release_id=data.get("release_id", ""),
+            provider=data.get("provider", ""),
+            confidence=float(data.get("confidence", 0.0)),
+            year=data.get("year"),
+            track_count=data.get("track_count"),
+            tracks=list(data.get("tracks", [])),
+        )
+
+
+@dataclass
+class MusicReleaseBundle:
+    bundle_id: str
+    root_path: Path
+    album_title: str
+    album_artist: str
+    tracks: list[MusicTrack] = field(default_factory=list)
+    companion_assets: list[MusicCompanionAsset] = field(default_factory=list)
+    year: int | None = None
+    genre: str | None = None
+    is_compilation: bool = False
+    total_discs: int = 1
+    confidence: float = 1.0
+    matched_catalog: MusicCatalogMatch | None = None
+
+
+@dataclass
+class MusicSpoolResult:
+    bundle_id: str
+    source_dir: Path
+    target_dir: Path
+    file_count: int
+    bytes_transferred: int
+    mode: str
+    success: bool
+    post_command_executed: bool = False
+    post_command_exit_code: int | None = None
+    error: str | None = None

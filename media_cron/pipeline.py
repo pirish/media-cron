@@ -5,6 +5,7 @@ from pathlib import Path
 import media_cron.plugins  # noqa: F401
 from media_cron.config import MediaCronConfig
 from media_cron.lock import LockContentionError, StagingLock
+from media_cron.metadata.models import MusicWorkflowMode
 from media_cron.models import (
     EXIT_CONFIG_ERROR,
     EXIT_FATAL_ERROR,
@@ -43,6 +44,7 @@ class Pipeline:
         self.target_torrent_identifier = target_torrent_identifier
         self._last_audiobook_summary: dict | None = None
         self._last_books_summary: dict | None = None
+        self._last_music_summary: dict | None = None
 
     def _get_input_plugins(self) -> tuple[list[InputPlugin], TorrentInputPlugin | None]:
         plugins: list[InputPlugin] = []
@@ -72,6 +74,8 @@ class Pipeline:
     def _resolve_destination_path(self, asset: MediaAsset) -> Path:
         """Resolves target library path using configured templates."""
         dest_root = self.config.paths.destination_dir or Path("/tmp/media")
+        if asset.destination_rel_path is not None:
+            return dest_root / asset.destination_rel_path
 
         # Determine category key
         if asset.category == MediaCategory.VIDEO_MOVIE:
@@ -95,16 +99,26 @@ class Pipeline:
                 ext=asset.extension.lstrip("."),
             )
         elif asset.category == MediaCategory.AUDIO_MUSIC:
-            tmpl = self.config.templates.get(
-                "music", "Music/{artist}/{album}/{track:02d} - {title}.{ext}"
-            )
-            rel_path = tmpl.format(
-                artist=asset.artist or "Unknown Artist",
-                album=asset.album or "Unknown Album",
-                track=asset.track_number or 1,
-                title=asset.clean_title,
-                ext=asset.extension.lstrip("."),
-            )
+            if (
+                getattr(self.config, "music", None)
+                and self.config.music.enabled
+                and self.config.music.workflow_mode == MusicWorkflowMode.SPOOL
+                and self.config.music.spool_dir
+            ):
+                dest_root = self.config.music.spool_dir
+                rel_folder = asset.path.parent.name
+                rel_path = f"{rel_folder}/{asset.path.name}"
+            else:
+                tmpl = self.config.templates.get(
+                    "music", "Music/{artist}/{album}/{track:02d} - {title}.{ext}"
+                )
+                rel_path = tmpl.format(
+                    artist=asset.artist or "Unknown Artist",
+                    album=asset.album or "Unknown Album",
+                    track=asset.track_number or 1,
+                    title=asset.clean_title,
+                    ext=asset.extension.lstrip("."),
+                )
         elif asset.category == MediaCategory.AUDIO_BOOK:
             tmpl = self.config.templates.get(
                 "audiobook", "Audiobooks/{author}/{title}/{track:02d} - {title}.{ext}"
@@ -183,6 +197,8 @@ class Pipeline:
                     hasattr(lk, "identifier") and hasattr(lk.identifier, "total_books")
                 ):
                     lk.configure(self.config.books)
+                elif getattr(lk, "plugin_name", "") == "music":
+                    lk.configure(getattr(self.config, "music", None) or self.config)
                 else:
                     lk.configure(self.config.audiobook)
             elif hasattr(lk, "identifier") and hasattr(lk.identifier, "config"):
@@ -199,7 +215,7 @@ class Pipeline:
 
             # 1. Check junk extensions
             if ext in self.config.general.junk_extensions:
-                is_book = False
+                is_preserved = False
                 if (
                     getattr(self.config, "books", None)
                     and self.config.books.enabled
@@ -214,9 +230,19 @@ class Pipeline:
                                 "read me",
                                 "info",
                             ):
-                                is_book = True
+                                is_preserved = True
                                 break
-                if not is_book:
+                if (
+                    not is_preserved
+                    and getattr(self.config, "music", None)
+                    and self.config.music.enabled
+                ):
+                    for lk in lookup_plugins:
+                        if getattr(lk, "plugin_name", "") == "music" and lk.can_handle(item):
+                            is_preserved = True
+                            break
+
+                if not is_preserved:
                     plans.append(
                         OperationPlan(
                             op_type=OperationType.PURGE_JUNK,
@@ -267,6 +293,13 @@ class Pipeline:
                         break
 
                     asset = lookup.enrich(item)
+                    if (
+                        asset.category == MediaCategory.AUDIO_MUSIC
+                        and hasattr(self.config, "music")
+                        and not self.config.music.enabled
+                    ):
+                        continue
+
                     dest_path = self._resolve_destination_path(asset)
                     plans.append(
                         OperationPlan(
@@ -361,11 +394,14 @@ class Pipeline:
                     )
                 )
 
-        # Collect audiobook and book telemetry summary
+        # Collect audiobook, book, and music telemetry summary
         self._last_audiobook_summary = None
         self._last_books_summary = None
+        self._last_music_summary = None
         for lk in lookup_plugins:
-            if hasattr(lk, "identifier") and hasattr(lk.identifier, "get_summary"):
+            if getattr(lk, "plugin_name", "") == "music" and hasattr(lk, "get_summary"):
+                self._last_music_summary = lk.get_summary()
+            elif hasattr(lk, "identifier") and hasattr(lk.identifier, "get_summary"):
                 summary_data = lk.identifier.get_summary()
                 if summary_data.get("total_audiobooks", 0) > 0:
                     self._last_audiobook_summary = summary_data
@@ -384,7 +420,12 @@ class Pipeline:
         staging_dir = self.config.paths.staging_dir
         dest_dir = self.config.paths.destination_dir
 
-        if not dest_dir:
+        if not dest_dir and not (
+            getattr(self.config, "music", None)
+            and self.config.music.enabled
+            and self.config.music.workflow_mode == MusicWorkflowMode.SPOOL
+            and self.config.music.spool_dir
+        ):
             return BatchSummary(
                 batch_id=batch_id,
                 started_at=started_at,
@@ -445,6 +486,7 @@ class Pipeline:
                 torrent_summary=torrent_summary,
                 audiobook_summary=self._last_audiobook_summary,
                 books_summary=self._last_books_summary,
+                music_summary=self._last_music_summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -606,6 +648,7 @@ class Pipeline:
                     torrent_summary=torrent_summary,
                     audiobook_summary=self._last_audiobook_summary,
                     books_summary=self._last_books_summary,
+                    music_summary=self._last_music_summary,
                 )
         except LockContentionError as e:
             return BatchSummary(
