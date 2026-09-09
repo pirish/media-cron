@@ -41,6 +41,7 @@ class Pipeline:
         self.config = config
         self.registry = registry or default_registry
         self.target_torrent_identifier = target_torrent_identifier
+        self._last_audiobook_summary: dict | None = None
 
     def _get_input_plugins(self) -> tuple[list[InputPlugin], TorrentInputPlugin | None]:
         plugins: list[InputPlugin] = []
@@ -173,6 +174,11 @@ class Pipeline:
                 discovered_items.append(item)
 
         lookup_plugins = self.registry.get_lookups(self.config.plugins.lookups)
+        for lk in lookup_plugins:
+            if hasattr(lk, "configure"):
+                lk.configure(self.config.audiobook)
+            elif hasattr(lk, "identifier") and hasattr(lk.identifier, "config"):
+                lk.identifier.config = self.config.audiobook
         plans: list[OperationPlan] = []
         mode = TransferMode(self.config.general.mode)
 
@@ -326,6 +332,15 @@ class Pipeline:
                     )
                 )
 
+        # Collect audiobook telemetry summary
+        self._last_audiobook_summary = None
+        for lk in lookup_plugins:
+            if hasattr(lk, "identifier") and hasattr(lk.identifier, "get_summary"):
+                summary_data = lk.identifier.get_summary()
+                if summary_data.get("total_audiobooks", 0) > 0:
+                    self._last_audiobook_summary = summary_data
+                break
+
         return plans, discovered_items, torrent_plugin
 
     def run(self) -> BatchSummary:
@@ -397,6 +412,7 @@ class Pipeline:
                 dry_run=True,
                 exit_code=EXIT_SUCCESS,
                 torrent_summary=torrent_summary,
+                audiobook_summary=self._last_audiobook_summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -556,6 +572,7 @@ class Pipeline:
                     dry_run=False,
                     exit_code=exit_code,
                     torrent_summary=torrent_summary,
+                    audiobook_summary=self._last_audiobook_summary,
                 )
         except LockContentionError as e:
             return BatchSummary(

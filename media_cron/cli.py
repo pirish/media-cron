@@ -64,6 +64,19 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Tagged Torrents:     {ts.get('tagged_torrents', 0)}",
             ]
         )
+    if summary.audiobook_summary:
+        asum = summary.audiobook_summary
+        lines.extend(
+            [
+                "--- Audiobook Telemetry ---",
+                f"Total Audiobooks:      {asum.get('total_audiobooks', 0)}",
+                f"Identified External:   {asum.get('identified_external', 0)}",
+                f"Identified Local Only: {asum.get('identified_local_only', 0)}",
+                f"Cache Hits:            {asum.get('cache_hits', 0)}",
+                f"Cache Misses:          {asum.get('cache_misses', 0)}",
+                f"Average Confidence:    {asum.get('average_confidence', 0.0)}",
+            ]
+        )
     lines.append("--- Operations ---")
     for op in summary.operations:
         status_tag = f"[{op.status.value}]"
@@ -116,6 +129,26 @@ def run_command(
     seeding_mode: str | None = typer.Option(
         None, "--seeding-mode", help="Seeding strategy: client_relocate, direct_filesystem, none"
     ),
+    audiobook_lookup: bool | None = typer.Option(
+        None,
+        "--audiobook-lookup/--no-audiobook-lookup",
+        help="Enable or disable external book metadata queries for audiobooks",
+    ),
+    audiobook_provider: str | None = typer.Option(
+        None,
+        "--audiobook-provider",
+        help="Specific provider to force for audiobook lookups ('openlibrary', 'audnexus')",
+    ),
+    audiobook_confidence_threshold: float | None = typer.Option(
+        None,
+        "--audiobook-confidence-threshold",
+        help="Custom confidence threshold [0.0, 1.0] required to override local author/title tags",
+    ),
+    audiobook_cache: bool | None = typer.Option(
+        None,
+        "--audiobook-cache/--no-audiobook-cache",
+        help="Enable or disable response caching for audiobooks",
+    ),
     format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
     config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
@@ -143,6 +176,29 @@ def run_command(
         cfg.active_torrent_client = torrent_client
     if hybrid:
         cfg.hybrid_ingest = True
+
+    # Audiobook CLI overrides
+    if audiobook_lookup is not None:
+        cfg.audiobook.enable_external_lookup = audiobook_lookup
+    if audiobook_confidence_threshold is not None:
+        cfg.audiobook.confidence_threshold = audiobook_confidence_threshold
+    if audiobook_cache is not None:
+        cfg.audiobook.cache.enabled = audiobook_cache
+    if audiobook_provider:
+        target_p = audiobook_provider.lower()
+        if target_p in cfg.audiobook.providers:
+            for pname, pcfg in cfg.audiobook.providers.items():
+                if pname == target_p:
+                    pcfg.enabled = True
+                    pcfg.priority = 1
+                else:
+                    pcfg.enabled = False
+        else:
+            from media_cron.config import ExternalProviderConfig
+
+            cfg.audiobook.providers = {
+                target_p: ExternalProviderConfig(provider_name=target_p, enabled=True, priority=1)
+            }
 
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:
@@ -256,6 +312,135 @@ def test_client(
                 err=True,
             )
         raise typer.Exit(code=EXIT_FATAL_ERROR)
+
+
+@app.command("test-book-lookup")
+def test_book_lookup(
+    title: str = typer.Argument(..., help="Book or work title to search for"),
+    author: str | None = typer.Option(None, "--author", "-a", help="Author name to narrow query"),
+    provider: str = typer.Option(
+        "openlibrary",
+        "--provider",
+        "-p",
+        help="Metadata provider to query ('openlibrary', 'audnexus')",
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
+) -> None:
+    """Diagnostic command to validate metadata provider connectivity and query parsing."""
+    import time
+
+    from media_cron.metadata.base import ProviderError, default_provider_registry
+    from media_cron.metadata.cache import MetadataCache
+    from media_cron.metadata.scorer import ConfidenceScorer
+
+    cfg = MediaCronConfig.load(config_path=config)
+    target_prov = provider.lower()
+    prov_cfg = cfg.audiobook.providers.get(target_prov)
+    if not prov_cfg:
+        from media_cron.config import ExternalProviderConfig
+
+        prov_cfg = ExternalProviderConfig(provider_name=target_prov)
+
+    cache = (
+        MetadataCache(cache_file=cfg.audiobook.cache.cache_file)
+        if cfg.audiobook.cache.enabled
+        else None
+    )
+    scorer = ConfidenceScorer()
+
+    start_time = time.time()
+    cached = False
+    top_match = None
+    matches_found = 0
+
+    try:
+        if cache:
+            cached_match = cache.get(target_prov, title, author)
+            if cached_match is not None:
+                cached = True
+                top_match = cached_match
+                matches_found = 1
+
+        if top_match is None:
+            prov_cls = default_provider_registry.get(target_prov)
+            try:
+                inst = prov_cls(scorer=scorer)
+            except TypeError:
+                inst = prov_cls()
+            results = inst.search(title=title, author=author, config=prov_cfg)
+            matches_found = len(results)
+            if results:
+                top_match = results[0]
+                if cache:
+                    cache.put(
+                        target_prov,
+                        title,
+                        author,
+                        top_match,
+                        ttl_seconds=cfg.audiobook.cache.ttl_seconds,
+                    )
+
+        latency_ms = round((time.time() - start_time) * 1000, 1)
+
+        payload = {
+            "query_title": title,
+            "query_author": author,
+            "provider": target_prov,
+            "matches_found": matches_found,
+            "top_match": (
+                {
+                    "title": top_match.title,
+                    "author": top_match.author,
+                    "year": top_match.year,
+                    "narrator": top_match.narrator,
+                    "series": top_match.series,
+                    "work_id": top_match.work_id,
+                    "confidence": top_match.confidence,
+                }
+                if top_match
+                else None
+            ),
+            "cached": cached,
+            "latency_ms": latency_ms,
+        }
+
+        if format.lower() == "json":
+            typer.echo(json.dumps(payload, indent=2))
+        else:
+            lines = [
+                "=== Book Lookup Diagnostic ===",
+                f"Query Title:   {title}",
+                f"Query Author:  {author or 'None'}",
+                f"Provider:      {target_prov}",
+                f"Matches Found: {matches_found}",
+                f"Cached:        {cached}",
+                f"Latency:       {latency_ms:.1f}ms",
+            ]
+            if top_match:
+                lines.extend(
+                    [
+                        "Top Match:",
+                        f"  Title:      {top_match.title}",
+                        f"  Author:     {top_match.author}",
+                        f"  Year:       {top_match.year}",
+                        f"  Narrator:   {top_match.narrator}",
+                        f"  Series:     {top_match.series}",
+                        f"  Work ID:    {top_match.work_id}",
+                        f"  Confidence: {top_match.confidence}",
+                    ]
+                )
+            else:
+                lines.append("No matches found.")
+            typer.echo("\n".join(lines))
+    except (ProviderError, KeyError, Exception) as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"exit_code": 1, "error": str(e)}, indent=2))
+        else:
+            typer.echo(f"Error during lookup: {e}", err=True)
+        raise typer.Exit(code=1) from e
 
 
 def main() -> None:

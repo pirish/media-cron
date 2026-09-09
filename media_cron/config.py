@@ -57,6 +57,57 @@ class PluginsConfig:
 
 
 @dataclass
+class ExternalProviderConfig:
+    provider_name: str
+    enabled: bool = True
+    priority: int = 10
+    base_url: str = ""
+    api_key: str | None = None
+    timeout_seconds: float = 5.0
+    rate_limit_delay: float = 1.0
+
+
+@dataclass
+class MetadataCacheConfig:
+    enabled: bool = True
+    ttl_seconds: int = 2592000  # 30 days
+    cache_file: Path = field(
+        default_factory=lambda: Path(".media-cron-cache") / "audiobook_cache.json"
+    )
+
+
+def default_audiobook_providers() -> dict[str, ExternalProviderConfig]:
+    return {
+        "openlibrary": ExternalProviderConfig(
+            provider_name="openlibrary",
+            enabled=True,
+            priority=10,
+            base_url="https://openlibrary.org",
+            timeout_seconds=5.0,
+            rate_limit_delay=1.0,
+        ),
+        "audnexus": ExternalProviderConfig(
+            provider_name="audnexus",
+            enabled=False,
+            priority=20,
+            base_url="https://api.audnexus.com",
+            timeout_seconds=5.0,
+            rate_limit_delay=0.5,
+        ),
+    }
+
+
+@dataclass
+class AudiobookConfig:
+    enable_external_lookup: bool = True
+    confidence_threshold: float = 0.85
+    cache: MetadataCacheConfig = field(default_factory=MetadataCacheConfig)
+    providers: dict[str, ExternalProviderConfig] = field(
+        default_factory=default_audiobook_providers
+    )
+
+
+@dataclass
 class MediaCronConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     general: GeneralConfig = field(default_factory=GeneralConfig)
@@ -65,6 +116,7 @@ class MediaCronConfig:
     active_torrent_client: str | None = None
     hybrid_ingest: bool = False
     torrent_clients: dict[str, TorrentClientConfig] = field(default_factory=dict)
+    audiobook: AudiobookConfig = field(default_factory=AudiobookConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -167,6 +219,39 @@ class MediaCronConfig:
                     )
                     cfg.torrent_clients[name] = client_cfg
 
+            if "audiobook" in data and isinstance(data["audiobook"], dict):
+                ab = data["audiobook"]
+                if "enable_external_lookup" in ab:
+                    cfg.audiobook.enable_external_lookup = bool(ab["enable_external_lookup"])
+                if "confidence_threshold" in ab:
+                    cfg.audiobook.confidence_threshold = float(ab["confidence_threshold"])
+                if "cache" in ab and isinstance(ab["cache"], dict):
+                    c = ab["cache"]
+                    if "enabled" in c:
+                        cfg.audiobook.cache.enabled = bool(c["enabled"])
+                    if "ttl_seconds" in c:
+                        cfg.audiobook.cache.ttl_seconds = int(c["ttl_seconds"])
+                    if "cache_file" in c and c["cache_file"]:
+                        cfg.audiobook.cache.cache_file = Path(c["cache_file"])
+                if "providers" in ab and isinstance(ab["providers"], dict):
+                    for pname, pdata in ab["providers"].items():
+                        prov_cfg = cfg.audiobook.providers.get(
+                            pname, ExternalProviderConfig(provider_name=pname)
+                        )
+                        if "enabled" in pdata:
+                            prov_cfg.enabled = bool(pdata["enabled"])
+                        if "priority" in pdata:
+                            prov_cfg.priority = int(pdata["priority"])
+                        if "base_url" in pdata:
+                            prov_cfg.base_url = str(pdata["base_url"])
+                        if "api_key" in pdata:
+                            prov_cfg.api_key = pdata["api_key"]
+                        if "timeout_seconds" in pdata:
+                            prov_cfg.timeout_seconds = float(pdata["timeout_seconds"])
+                        if "rate_limit_delay" in pdata:
+                            prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
+                        cfg.audiobook.providers[pname] = prov_cfg
+
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
         if env_source:
@@ -227,5 +312,54 @@ class MediaCronConfig:
                 qb.seeding.completion_tag = qb_tag
             if qb_cat:
                 qb.seeding.completion_category = qb_cat
+
+        # Audiobook environment overrides
+        env_ab_lookup = os.getenv("MEDIA_CRON_AUDIOBOOK_ENABLE_LOOKUP")
+        if env_ab_lookup is not None:
+            cfg.audiobook.enable_external_lookup = env_ab_lookup.lower() in ("true", "1", "yes")
+
+        env_ab_thresh = os.getenv("MEDIA_CRON_AUDIOBOOK_CONFIDENCE_THRESHOLD")
+        if env_ab_thresh is not None:
+            cfg.audiobook.confidence_threshold = float(env_ab_thresh)
+
+        env_cache_enabled = os.getenv("MEDIA_CRON_AUDIOBOOK_CACHE_ENABLED")
+        if env_cache_enabled is not None:
+            cfg.audiobook.cache.enabled = env_cache_enabled.lower() in ("true", "1", "yes")
+
+        env_cache_ttl = os.getenv("MEDIA_CRON_AUDIOBOOK_CACHE_TTL")
+        if env_cache_ttl is not None:
+            cfg.audiobook.cache.ttl_seconds = int(env_cache_ttl)
+
+        env_cache_file = os.getenv("MEDIA_CRON_AUDIOBOOK_CACHE_FILE")
+        if env_cache_file is not None:
+            cfg.audiobook.cache.cache_file = Path(env_cache_file)
+
+        env_ol_enabled = os.getenv("MEDIA_CRON_OPENLIBRARY_ENABLED")
+        if env_ol_enabled is not None:
+            if "openlibrary" in cfg.audiobook.providers:
+                cfg.audiobook.providers["openlibrary"].enabled = env_ol_enabled.lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+
+        env_aud_enabled = os.getenv("MEDIA_CRON_AUDNEXUS_ENABLED")
+        if env_aud_enabled is not None:
+            if "audnexus" in cfg.audiobook.providers:
+                cfg.audiobook.providers["audnexus"].enabled = env_aud_enabled.lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+
+        env_ol_timeout = os.getenv("MEDIA_CRON_OPENLIBRARY_TIMEOUT")
+        if env_ol_timeout is not None:
+            if "openlibrary" in cfg.audiobook.providers:
+                cfg.audiobook.providers["openlibrary"].timeout_seconds = float(env_ol_timeout)
+
+        env_aud_timeout = os.getenv("MEDIA_CRON_AUDNEXUS_TIMEOUT")
+        if env_aud_timeout is not None:
+            if "audnexus" in cfg.audiobook.providers:
+                cfg.audiobook.providers["audnexus"].timeout_seconds = float(env_aud_timeout)
 
         return cfg

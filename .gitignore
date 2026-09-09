@@ -29,3 +29,4 @@ Thumbs.db
 
 # Local media staging / locks
 .media-cron.lock
+.media-cron-cache/
