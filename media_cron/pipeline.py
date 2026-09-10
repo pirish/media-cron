@@ -3,9 +3,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import media_cron.plugins  # noqa: F401
-from media_cron.config import MediaCronConfig
+from media_cron.config import DEFAULT_TEMPLATES, MediaCronConfig
 from media_cron.lock import LockContentionError, StagingLock
-from media_cron.metadata.models import MusicWorkflowMode
+from media_cron.metadata.models import (
+    MusicWorkflowMode,
+    VideoCompanionType,
+)
+from media_cron.metadata.video_bundler import VideoReleaseBundleAggregator
+from media_cron.metadata.video_spooler import VideoSpoolEngine
 from media_cron.models import (
     EXIT_CONFIG_ERROR,
     EXIT_FATAL_ERROR,
@@ -45,6 +50,22 @@ class Pipeline:
         self._last_audiobook_summary: dict | None = None
         self._last_books_summary: dict | None = None
         self._last_music_summary: dict | None = None
+        self._last_video_summary: dict | None = None
+
+    def _get_video_summary(self) -> dict | None:
+        if not getattr(self.config, "video", None) or not self.config.video.enabled:
+            return None
+        if self._last_video_summary is not None:
+            return self._last_video_summary
+        return {
+            "total_videos": 0,
+            "spooled_releases": 0,
+            "spool_skipped_count": 0,
+            "organized_movies": 0,
+            "organized_episodes": 0,
+            "rescan_notifications_sent": 0,
+            "rescan_errors": 0,
+        }
 
     def _get_input_plugins(self) -> tuple[list[InputPlugin], TorrentInputPlugin | None]:
         plugins: list[InputPlugin] = []
@@ -78,26 +99,84 @@ class Pipeline:
             return dest_root / asset.destination_rel_path
 
         # Determine category key
-        if asset.category == MediaCategory.VIDEO_MOVIE:
-            tmpl = self.config.templates.get(
-                "movie", "Movies/{title} ({year})/{title} ({year}).{ext}"
-            )
-            rel_path = tmpl.format(
-                title=asset.clean_title,
-                year=asset.year or "Unknown",
-                ext=asset.extension.lstrip("."),
-            )
+        if asset.category in (MediaCategory.VIDEO_MOVIE, MediaCategory.VIDEO_SERIES) and (
+            getattr(self.config, "video", None)
+            and self.config.video.enabled
+            and str(self.config.video.workflow_mode).lower() == "spool"
+            and self.config.video.spool_dir
+        ):
+            dest_root = self.config.video.spool_dir
+            rel_folder = asset.path.parent.name
+            rel_path = f"{rel_folder}/{asset.path.name}"
+        elif asset.category == MediaCategory.VIDEO_MOVIE:
+            custom_tmpl = self.config.templates.get("movie")
+            video_cfg = getattr(self.config, "video", None)
+            is_video_enabled = bool(video_cfg and video_cfg.enabled)
+            if custom_tmpl and custom_tmpl != DEFAULT_TEMPLATES.get("movie"):
+                rel_path = custom_tmpl.format(
+                    title=asset.clean_title,
+                    year=asset.year or "Unknown",
+                    ext=asset.extension.lstrip("."),
+                )
+            elif is_video_enabled:
+                movies_dir = video_cfg.library_movies_dir or "Movies"
+                res_part = f" [{asset.resolution}]" if asset.resolution else ""
+                year_part = f" ({asset.year})" if asset.year else " (Unknown)"
+                title = asset.clean_title
+                ext = asset.extension.lstrip(".")
+                rel_path = f"{movies_dir}/{title}{year_part}/{title}{year_part}{res_part}.{ext}"
+            else:
+                tmpl = custom_tmpl or DEFAULT_TEMPLATES.get(
+                    "movie", "Movies/{title} ({year})/{title} ({year}).{ext}"
+                )
+                rel_path = tmpl.format(
+                    title=asset.clean_title,
+                    year=asset.year or "Unknown",
+                    ext=asset.extension.lstrip("."),
+                )
         elif asset.category == MediaCategory.VIDEO_SERIES:
-            tmpl = self.config.templates.get(
-                "series",
-                "TV Shows/{show}/Season {season:02d}/{show} - S{season:02d}E{episode:02d}.{ext}",
-            )
-            rel_path = tmpl.format(
-                show=asset.series_title or asset.clean_title,
-                season=asset.season_number or 1,
-                episode=asset.episode_number or 1,
-                ext=asset.extension.lstrip("."),
-            )
+            custom_tmpl = self.config.templates.get("series")
+            video_cfg = getattr(self.config, "video", None)
+            is_video_enabled = bool(video_cfg and video_cfg.enabled)
+            if custom_tmpl and custom_tmpl != DEFAULT_TEMPLATES.get("series"):
+                rel_path = custom_tmpl.format(
+                    show=asset.series_title or asset.clean_title,
+                    season=asset.season_number or 1,
+                    episode=asset.episode_number or 1,
+                    ext=asset.extension.lstrip("."),
+                )
+            elif is_video_enabled:
+                tv_dir = video_cfg.library_tv_dir or "TV"
+                show = asset.series_title or asset.clean_title
+                season = asset.season_number or 1
+                episode = asset.episode_number or 1
+                end_ep = getattr(asset, "episode_end_number", None)
+                ep_tag = (
+                    f"S{season:02d}E{episode:02d}-E{end_ep:02d}"
+                    if end_ep
+                    else f"S{season:02d}E{episode:02d}"
+                )
+                res_part = f" [{asset.resolution}]" if asset.resolution else ""
+                ext = asset.extension.lstrip(".")
+                title_part = ""
+                if (
+                    asset.clean_title
+                    and not asset.clean_title.startswith("S")
+                    and asset.clean_title != show
+                ):
+                    title_part = f" - {asset.clean_title}"
+                rel_path = f"{tv_dir}/{show}/Season {season:02d}/{show} - {ep_tag}{title_part}{res_part}.{ext}"
+            else:
+                tmpl = custom_tmpl or DEFAULT_TEMPLATES.get(
+                    "series",
+                    "TV Shows/{show}/Season {season:02d}/{show} - S{season:02d}E{episode:02d}.{ext}",
+                )
+                rel_path = tmpl.format(
+                    show=asset.series_title or asset.clean_title,
+                    season=asset.season_number or 1,
+                    episode=asset.episode_number or 1,
+                    ext=asset.extension.lstrip("."),
+                )
         elif asset.category == MediaCategory.AUDIO_MUSIC:
             if (
                 getattr(self.config, "music", None)
@@ -188,6 +267,12 @@ class Pipeline:
             else:
                 discovered_items.append(item)
 
+        # Ensure companion subtitle files are processed after primary media files
+        subtitle_exts = {".srt", ".vtt", ".sub", ".idx", ".ass", ".ssa"}
+        discovered_items.sort(
+            key=lambda it: 1 if it.source_path.suffix.lower() in subtitle_exts else 0
+        )
+
         lookup_plugins = self.registry.get_lookups(self.config.plugins.lookups)
         for lk in lookup_plugins:
             if hasattr(lk, "dry_run"):
@@ -209,9 +294,80 @@ class Pipeline:
         plans: list[OperationPlan] = []
         mode = TransferMode(self.config.general.mode)
 
+        is_video_spool = bool(
+            getattr(self.config, "video", None)
+            and self.config.video.enabled
+            and str(self.config.video.workflow_mode).lower() in ("spool", "hybrid")
+            and self.config.video.spool_dir
+        )
+
+        video_spool_paths: set[Path] = set()
+        video_spool_plans: list[OperationPlan] = []
+        if is_video_spool:
+            video_target = (
+                staging_path
+                if (staging_path and staging_path.exists() and any(staging_path.iterdir()))
+                else source_path
+            )
+            if video_target and Path(video_target).exists():
+                aggregator = VideoReleaseBundleAggregator(
+                    sample_size_threshold_mb=self.config.general.sample_size_threshold_mb
+                )
+                bundles = aggregator.aggregate(Path(video_target))
+                spool_dir = self.config.video.spool_dir
+                total_videos = 0
+                spooled_count = 0
+                skipped_count = 0
+
+                for bundle in bundles:
+                    total_videos += len(bundle.primary_videos)
+                    for v in bundle.primary_videos:
+                        video_spool_paths.add(v.path.resolve())
+                    for c in bundle.companion_assets:
+                        video_spool_paths.add(c.path.resolve())
+
+                    dest_dir_target = spool_dir / bundle.root_path.name
+                    is_collision = dest_dir_target.exists()
+                    if is_collision:
+                        skipped_count += 1
+                    else:
+                        spooled_count += 1
+
+                    plan = OperationPlan(
+                        op_type=OperationType.SKIP_COLLISION
+                        if is_collision
+                        else OperationType.ORGANIZE,
+                        transfer_mode=mode,
+                        source_path=bundle.root_path,
+                        destination_path=dest_dir_target,
+                        reason=f"Target directory '{dest_dir_target.name}' already exists in drop folder"
+                        if is_collision
+                        else f"Video drop-folder spool for release '{bundle.release_title}'",
+                        dry_run=True,
+                    )
+                    plan.is_video_spool = True
+                    video_spool_plans.append(plan)
+
+                self._last_video_summary = {
+                    "total_videos": total_videos,
+                    "spooled_releases": spooled_count,
+                    "spool_skipped_count": skipped_count,
+                    "organized_movies": 0,
+                    "organized_episodes": 0,
+                    "rescan_notifications_sent": 0,
+                    "rescan_errors": 0,
+                }
+
+        planned_subtitle_paths: set[Path] = set()
+
         for item in discovered_items:
             path = item.source_path
             ext = path.suffix.lower()
+
+            if is_video_spool and path.resolve() in video_spool_paths:
+                continue
+            if path.resolve() in planned_subtitle_paths:
+                continue
 
             # 1. Check junk extensions
             if ext in self.config.general.junk_extensions:
@@ -241,6 +397,14 @@ class Pipeline:
                         if getattr(lk, "plugin_name", "") == "music" and lk.can_handle(item):
                             is_preserved = True
                             break
+                if (
+                    not is_preserved
+                    and getattr(self.config, "video", None)
+                    and self.config.video.enabled
+                    and self.config.video.preserve_companions
+                ):
+                    if VideoCompanionType.from_path(path) != VideoCompanionType.UNKNOWN:
+                        is_preserved = True
 
                 if not is_preserved:
                     plans.append(
@@ -315,10 +479,13 @@ class Pipeline:
                     # Plan associated subtitles
                     for sub in asset.subtitle_files:
                         sub_resolved = sub.resolve()
-                        if sub_resolved in seen_paths:
+                        if sub_resolved in planned_subtitle_paths:
                             continue
                         sub_ext = sub.suffix.lower()
-                        dest_sub = dest_path.with_suffix(sub_ext)
+                        if hasattr(lookup, "format_subtitle_destination"):
+                            dest_sub = lookup.format_subtitle_destination(dest_path, sub)
+                        else:
+                            dest_sub = dest_path.with_suffix(sub_ext)
                         plans.append(
                             OperationPlan(
                                 op_type=OperationType.ORGANIZE,
@@ -329,6 +496,7 @@ class Pipeline:
                                 dry_run=True,
                             )
                         )
+                        planned_subtitle_paths.add(sub_resolved)
 
                     # Plan seed relocation if configured
                     if self.config.paths.seed_dir:
@@ -394,6 +562,8 @@ class Pipeline:
                     )
                 )
 
+        plans.extend(video_spool_plans)
+
         # Collect audiobook, book, and music telemetry summary
         self._last_audiobook_summary = None
         self._last_books_summary = None
@@ -408,6 +578,31 @@ class Pipeline:
                 if summary_data.get("total_books", 0) > 0:
                     self._last_books_summary = summary_data
 
+        if getattr(self.config, "video", None) and self.config.video.enabled and not is_video_spool:
+            from media_cron.plugins.lookup.video import VIDEO_EXTENSIONS
+
+            total_videos = 0
+            organized_movies = 0
+            organized_episodes = 0
+            for p in plans:
+                if p.op_type in (OperationType.ORGANIZE, OperationType.UPGRADE_REPLACE):
+                    if p.source_path.suffix.lower() in VIDEO_EXTENSIONS:
+                        total_videos += 1
+                        dest_str = str(p.destination_path or "")
+                        if "/Movies" in dest_str or "Movies/" in dest_str:
+                            organized_movies += 1
+                        elif "/TV" in dest_str or "TV/" in dest_str:
+                            organized_episodes += 1
+            self._last_video_summary = {
+                "total_videos": total_videos,
+                "spooled_releases": 0,
+                "spool_skipped_count": 0,
+                "organized_movies": organized_movies,
+                "organized_episodes": organized_episodes,
+                "rescan_notifications_sent": 0,
+                "rescan_errors": 0,
+            }
+
         return plans, discovered_items, torrent_plugin
 
     def run(self) -> BatchSummary:
@@ -420,11 +615,22 @@ class Pipeline:
         staging_dir = self.config.paths.staging_dir
         dest_dir = self.config.paths.destination_dir
 
-        if not dest_dir and not (
-            getattr(self.config, "music", None)
-            and self.config.music.enabled
-            and self.config.music.workflow_mode == MusicWorkflowMode.SPOOL
-            and self.config.music.spool_dir
+        is_video_spool = bool(
+            getattr(self.config, "video", None)
+            and self.config.video.enabled
+            and str(self.config.video.workflow_mode).lower() in ("spool", "hybrid")
+            and self.config.video.spool_dir
+        )
+
+        if (
+            not dest_dir
+            and not (
+                getattr(self.config, "music", None)
+                and self.config.music.enabled
+                and self.config.music.workflow_mode == MusicWorkflowMode.SPOOL
+                and self.config.music.spool_dir
+            )
+            and not is_video_spool
         ):
             return BatchSummary(
                 batch_id=batch_id,
@@ -487,6 +693,7 @@ class Pipeline:
                 audiobook_summary=self._last_audiobook_summary,
                 books_summary=self._last_books_summary,
                 music_summary=self._last_music_summary,
+                video_summary=self._get_video_summary(),
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -521,8 +728,69 @@ class Pipeline:
                 junk_count = 0
                 skipped_count = 0
                 error_count = 0
+                if is_video_spool:
+                    spool_engine = VideoSpoolEngine()
+                    aggregator = VideoReleaseBundleAggregator(
+                        sample_size_threshold_mb=self.config.general.sample_size_threshold_mb
+                    )
+                    video_bundles = aggregator.aggregate(staging_dir)
+                    total_videos = 0
+                    spooled_releases = 0
+                    spool_skipped = 0
+
+                    for bundle in video_bundles:
+                        total_videos += len(bundle.primary_videos)
+                        spool_res = spool_engine.spool_release(
+                            bundle=bundle,
+                            spool_dir=self.config.video.spool_dir,
+                            post_command=self.config.video.post_ingest_command,
+                            dry_run=False,
+                        )
+                        if spool_res.skipped:
+                            spool_skipped += 1
+                        elif spool_res.success:
+                            spooled_releases += 1
+                            if self.config.general.mode == "move":
+                                import shutil
+
+                                shutil.rmtree(bundle.root_path, ignore_errors=True)
+                        else:
+                            error_count += 1
+                            if spool_res.error:
+                                errors.append(spool_res.error)
+
+                    self._last_video_summary = {
+                        "total_videos": total_videos,
+                        "spooled_releases": spooled_releases,
+                        "spool_skipped_count": spool_skipped,
+                        "organized_movies": 0,
+                        "organized_episodes": 0,
+                        "rescan_notifications_sent": 0,
+                        "rescan_errors": 0,
+                    }
 
                 for plan in plans:
+                    if getattr(plan, "is_video_spool", False):
+                        if plan.op_type == OperationType.SKIP_COLLISION:
+                            skipped_count += 1
+                            results.append(
+                                OperationResult(
+                                    plan=plan,
+                                    status=OperationStatus.SKIPPED,
+                                    message=plan.reason,
+                                )
+                            )
+                        else:
+                            processed_count += 1
+                            results.append(
+                                OperationResult(
+                                    plan=plan,
+                                    status=OperationStatus.SUCCESS,
+                                    message=plan.reason,
+                                )
+                            )
+                        continue
+
                     if plan.op_type == OperationType.QUARANTINE_CORRUPT:
                         error_count += 1
                         errors.append(plan.reason)
@@ -566,6 +834,67 @@ class Pipeline:
                         error_count += 1
                         if op_result.error:
                             errors.append(op_result.error)
+
+                if (
+                    getattr(self.config, "video", None)
+                    and self.config.video.enabled
+                    and not is_video_spool
+                ):
+                    from media_cron.plugins.lookup.video import VIDEO_EXTENSIONS
+
+                    total_videos = 0
+                    organized_movies = 0
+                    organized_episodes = 0
+                    for res in results:
+                        if res.status == OperationStatus.SUCCESS and res.plan.op_type in (
+                            OperationType.ORGANIZE,
+                            OperationType.UPGRADE_REPLACE,
+                        ):
+                            if res.plan.source_path.suffix.lower() in VIDEO_EXTENSIONS:
+                                total_videos += 1
+                                dest_str = str(res.plan.destination_path or "")
+                                if "/Movies" in dest_str or "Movies/" in dest_str:
+                                    organized_movies += 1
+                                elif "/TV" in dest_str or "TV/" in dest_str:
+                                    organized_episodes += 1
+
+                    # Media server notification hook (debounced single request per batch)
+                    rescan_sent = 0
+                    rescan_errors = 0
+                    video_cfg = self.config.video
+                    if (
+                        video_cfg.media_server
+                        and video_cfg.media_server.enabled
+                        and (organized_movies > 0 or organized_episodes > 0)
+                    ):
+                        try:
+                            from media_cron.metadata.media_servers import get_media_server_client
+
+                            ms_client = get_media_server_client(video_cfg.media_server.provider)
+                            rescan_result = ms_client.trigger_rescan(
+                                config=video_cfg.media_server,
+                                library_id=video_cfg.media_server.library_id,
+                                dry_run=False,
+                            )
+                            if rescan_result.success:
+                                rescan_sent = 1
+                            else:
+                                rescan_errors = 1
+                        except Exception as e:
+                            import logging
+
+                            logging.getLogger(__name__).warning("Media server rescan error: %s", e)
+                            rescan_errors = 1
+
+                    self._last_video_summary = {
+                        "total_videos": total_videos,
+                        "spooled_releases": 0,
+                        "spool_skipped_count": 0,
+                        "organized_movies": organized_movies,
+                        "organized_episodes": organized_episodes,
+                        "rescan_notifications_sent": rescan_sent,
+                        "rescan_errors": rescan_errors,
+                    }
 
                 # Seeding Relocation & Tagging for processed torrents
                 relocated_count = 0
@@ -649,6 +978,7 @@ class Pipeline:
                     audiobook_summary=self._last_audiobook_summary,
                     books_summary=self._last_books_summary,
                     music_summary=self._last_music_summary,
+                    video_summary=self._get_video_summary(),
                 )
         except LockContentionError as e:
             return BatchSummary(

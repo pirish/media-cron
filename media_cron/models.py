@@ -66,6 +66,7 @@ class MediaAsset:
     series_title: str | None = None
     season_number: int | None = None
     episode_number: int | None = None
+    episode_end_number: int | None = None
     artist: str | None = None
     album: str | None = None
     track_number: int | None = None
@@ -94,6 +95,7 @@ class OperationPlan:
     plan_id: uuid.UUID = field(default_factory=uuid.uuid4)
     destination_path: Path | None = None
     dry_run: bool = False
+    is_video_spool: bool = False
 
 
 @dataclass
@@ -123,6 +125,7 @@ class BatchSummary:
     audiobook_summary: dict | None = None
     books_summary: dict | None = None
     music_summary: dict | None = None
+    video_summary: dict | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -160,4 +163,6 @@ class BatchSummary:
             data["books_summary"] = self.books_summary
         if self.music_summary is not None:
             data["music_summary"] = self.music_summary
+        if self.video_summary is not None:
+            data["video_summary"] = self.video_summary
         return data

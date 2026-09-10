@@ -106,6 +106,20 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Errors:             {msum.get('errors', 0)}",
             ]
         )
+    if summary.video_summary:
+        vsum = summary.video_summary
+        lines.extend(
+            [
+                "--- Video Telemetry ---",
+                f"Total Videos:          {vsum.get('total_videos', 0)}",
+                f"Spooled Releases:      {vsum.get('spooled_releases', 0)}",
+                f"Spool Skipped:         {vsum.get('spool_skipped_count', 0)}",
+                f"Organized Movies:      {vsum.get('organized_movies', 0)}",
+                f"Organized Episodes:    {vsum.get('organized_episodes', 0)}",
+                f"Rescan Notifications:  {vsum.get('rescan_notifications_sent', 0)}",
+                f"Rescan Errors:         {vsum.get('rescan_errors', 0)}",
+            ]
+        )
     lines.append("--- Operations ---")
     for op in summary.operations:
         status_tag = f"[{op.status.value}]"
@@ -244,6 +258,56 @@ def run_command(
         "--discogs-token",
         help="Optional personal access token for Discogs API queries",
     ),
+    video: bool | None = typer.Option(
+        None,
+        "--video/--no-video",
+        help="Enable or disable video processing",
+    ),
+    video_mode: str | None = typer.Option(
+        None,
+        "--video-mode",
+        help="Operational workflow mode: spool, direct, hybrid",
+    ),
+    video_spool_dir: Path | None = typer.Option(
+        None,
+        "--video-spool-dir",
+        help="Drop/spool directory where releases are deposited for external managers like Sonarr/Radarr",
+    ),
+    video_post_command: str | None = typer.Option(
+        None,
+        "--video-post-command",
+        help="Optional shell command hook executed upon successful release drop",
+    ),
+    media_server: bool | None = typer.Option(
+        None,
+        "--media-server/--no-media-server",
+        help="Enable/disable media server library rescan notification",
+    ),
+    media_server_provider: str | None = typer.Option(
+        None,
+        "--media-server-provider",
+        help="Target media server provider: jellyfin, emby, plex",
+    ),
+    media_server_url: str | None = typer.Option(
+        None,
+        "--media-server-url",
+        help="Base URL of media server",
+    ),
+    media_server_token: str | None = typer.Option(
+        None,
+        "--media-server-token",
+        help="API token or authentication key for the media server",
+    ),
+    media_server_library_id: str | None = typer.Option(
+        None,
+        "--media-server-library-id",
+        help="Optional specific library/section ID to refresh",
+    ),
+    media_server_max_retries: int | None = typer.Option(
+        None,
+        "--media-server-max-retries",
+        help="Max retry attempts for rescan notifications",
+    ),
     format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
     config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
@@ -327,6 +391,34 @@ def run_command(
     if discogs_token is not None:
         cfg.music.discogs_token = discogs_token
 
+    # Video CLI overrides
+    if video is not None:
+        cfg.video.enabled = video
+    if video_mode is not None:
+        cfg.video.workflow_mode = video_mode.lower()
+        cfg.video.enabled = True
+    if video_spool_dir is not None:
+        cfg.video.spool_dir = video_spool_dir
+        cfg.video.enabled = True
+        if video_mode is None and cfg.video.workflow_mode == "direct":
+            cfg.video.workflow_mode = "spool"
+    if video_post_command is not None:
+        cfg.video.post_ingest_command = video_post_command
+    if media_server is not None:
+        cfg.video.media_server.enabled = media_server
+        if media_server:
+            cfg.video.enabled = True
+    if media_server_provider is not None:
+        cfg.video.media_server.provider = media_server_provider.lower()
+    if media_server_url is not None:
+        cfg.video.media_server.url = media_server_url
+    if media_server_token is not None:
+        cfg.video.media_server.token = media_server_token
+    if media_server_library_id is not None:
+        cfg.video.media_server.library_id = media_server_library_id
+    if media_server_max_retries is not None:
+        cfg.video.media_server.max_retries = media_server_max_retries
+
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:
             cfg.torrent_clients[cfg.active_torrent_client] = TorrentClientConfig(
@@ -335,7 +427,11 @@ def run_command(
         cfg.torrent_clients[cfg.active_torrent_client].seeding.mode = seeding_mode
 
     # 3. Validate paths
-    if not cfg.paths.destination_dir and not (cfg.music.enabled and cfg.music.spool_dir):
+    if (
+        not cfg.paths.destination_dir
+        and not (cfg.music.enabled and cfg.music.spool_dir)
+        and not (cfg.video.enabled and cfg.video.spool_dir)
+    ):
         msg = "Error: --destination must be specified via CLI or config file."
         if format.lower() == "json":
             typer.echo(json.dumps({"exit_code": EXIT_CONFIG_ERROR, "errors": [msg]}))
@@ -1007,6 +1103,295 @@ def test_music_spool(
             )
         typer.echo("\n".join(lines))
     raise typer.Exit(code=EXIT_SUCCESS if status == "success" else 1)
+
+
+@app.command("test-video-identify")
+def test_video_identify(
+    path: Path = typer.Argument(..., help="Path to a video file or directory release bundle"),
+    format: str = typer.Option(
+        "text", "--format", "-f", help="Output display format: text or json"
+    ),
+) -> None:
+    """Diagnostic command to inspect video files, extract metadata, resolution, quality, and companion assets."""
+    if not path.exists():
+        msg = f"Path '{path}' not found."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    from media_cron.metadata.video_bundler import VideoReleaseBundleAggregator
+    from media_cron.models import DiscoveredItem
+    from media_cron.plugins.lookup.video import SceneVideoLookup
+
+    bundler = VideoReleaseBundleAggregator()
+    lookup = SceneVideoLookup()
+
+    track_dict = None
+    bundle_dict = None
+
+    if path.is_file():
+        stat = path.stat()
+        item = DiscoveredItem(
+            source_path=path,
+            file_size=stat.st_size,
+            modified_time=stat.st_mtime,
+            is_archive=False,
+            is_directory=False,
+        )
+        asset = lookup.enrich(item)
+        track_dict = {
+            "title": asset.clean_title,
+            "show_title": asset.series_title,
+            "season_number": asset.season_number,
+            "episode_number": asset.episode_number,
+            "year": asset.year,
+            "resolution": getattr(asset, "resolution", None),
+            "source_quality": getattr(asset, "quality", None),
+            "format": path.suffix.lstrip(".").lower(),
+            "is_sample": False,
+        }
+        bundle = bundler.get_bundle(path)
+    else:
+        bundles = bundler.aggregate(path)
+        bundle = bundles[0] if bundles else None
+        if bundle and bundle.primary_videos:
+            primary = bundle.primary_videos[0]
+            track_dict = {
+                "title": primary.title,
+                "show_title": primary.show_title,
+                "season_number": primary.season_number,
+                "episode_number": primary.episode_number,
+                "year": primary.year,
+                "resolution": primary.resolution,
+                "source_quality": primary.source_quality,
+                "format": primary.format.value
+                if hasattr(primary.format, "value")
+                else str(primary.format),
+                "is_sample": primary.is_sample,
+            }
+
+    if bundle:
+        bundle_dict = {
+            "release_title": bundle.release_title,
+            "is_series": bundle.is_series,
+            "show_title": bundle.show_title,
+            "season_number": bundle.season_number,
+            "total_videos": len(bundle.primary_videos),
+            "companion_files": [c.path.name for c in bundle.companion_assets],
+        }
+
+    if format.lower() == "json":
+        payload = {
+            "status": "success",
+            "path": str(path),
+            "track": track_dict,
+            "release_bundle": bundle_dict,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Video Identification Diagnostic ===",
+            f"Path:            {path}",
+        ]
+        if track_dict:
+            lines.extend(
+                [
+                    f"Title:           {track_dict.get('title')}",
+                    f"Show:            {track_dict.get('show_title') or 'N/A'}",
+                    f"Season/Episode:  S{track_dict.get('season_number') or 0:02d}E{track_dict.get('episode_number') or 0:02d}"
+                    if track_dict.get("season_number") is not None
+                    else "N/A",
+                    f"Year:            {track_dict.get('year') or 'N/A'}",
+                    f"Resolution:      {track_dict.get('resolution') or 'N/A'}",
+                    f"Quality:         {track_dict.get('source_quality') or 'N/A'}",
+                    f"Format:          {track_dict.get('format')}",
+                ]
+            )
+        if bundle_dict:
+            lines.extend(
+                [
+                    f"Release Bundle:  {bundle_dict.get('release_title')}",
+                    f"Total Videos:    {bundle_dict.get('total_videos')}",
+                    f"Companions:      {', '.join(bundle_dict.get('companion_files', [])) or 'None'}",
+                ]
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@app.command("test-video-spool")
+def test_video_spool(
+    source_path: Path = typer.Argument(..., help="Directory containing the video release to spool"),
+    spool_dir: Path = typer.Option(..., "--spool-dir", help="Target drop folder destination"),
+    post_command: str | None = typer.Option(
+        None, "--post-command", help="Shell command template to execute"
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--no-dry-run", help="Simulate deposition without copying/moving files"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+) -> None:
+    """Diagnostic command to simulate or perform atomic drop-folder video release deposition."""
+    from media_cron.metadata.video_bundler import VideoReleaseBundleAggregator
+    from media_cron.metadata.video_spooler import VideoSpoolEngine
+
+    if not source_path.exists():
+        msg = f"Source directory '{source_path}' does not exist."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    bundler = VideoReleaseBundleAggregator()
+    bundle = bundler.get_bundle(source_path)
+    if not bundle:
+        bundles = bundler.aggregate(source_path)
+        bundle = bundles[0] if bundles else None
+
+    if not bundle:
+        msg = f"No video release bundle found in '{source_path}'."
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=1)
+
+    spooler = VideoSpoolEngine()
+    target_release_path = spool_dir / bundle.root_path.name
+    files_transferred = [
+        str(v.path.relative_to(bundle.root_path)) for v in bundle.primary_videos
+    ] + [str(c.path.relative_to(bundle.root_path)) for c in bundle.companion_assets]
+
+    post_cmd_rendered = (
+        post_command.replace("{release_path}", str(target_release_path)) if post_command else None
+    )
+
+    if dry_run:
+        status = "success"
+        post_cmd_exit = 0 if post_command else None
+    else:
+        spool_res = spooler.spool_release(
+            bundle=bundle,
+            spool_dir=spool_dir,
+            post_command=post_command,
+            dry_run=False,
+        )
+        status = "success" if spool_res.success else "failed"
+        post_cmd_exit = spool_res.post_command_exit_code
+
+    if format.lower() == "json":
+        payload = {
+            "status": status,
+            "dry_run": dry_run,
+            "source_dir": str(source_path),
+            "spool_dir": str(spool_dir),
+            "target_release_path": str(target_release_path),
+            "files_transferred": files_transferred,
+            "post_command": post_cmd_rendered,
+            "post_command_exit_code": post_cmd_exit,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Video Spool Diagnostic ===",
+            f"Status:         {status}",
+            f"Mode:           {'[DRY-RUN SIMULATION]' if dry_run else '[LIVE EXECUTION]'}",
+            f"Source Dir:     {source_path}",
+            f"Spool Dir:      {spool_dir}",
+            f"Target Release: {target_release_path}",
+            f"Files ({len(files_transferred)}):",
+        ]
+        for f in files_transferred:
+            lines.append(f"  {f}")
+        if post_cmd_rendered:
+            lines.extend(
+                [
+                    f"Post Command:   {post_cmd_rendered}",
+                    f"Exit Code:      {post_cmd_exit if post_cmd_exit is not None else 'N/A'}",
+                ]
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS if status == "success" else 1)
+
+
+@app.command("test-media-server-notify")
+def test_media_server_notify(
+    provider: str = typer.Option(
+        "jellyfin", "--provider", help="Media server provider: jellyfin, emby, plex"
+    ),
+    url: str = typer.Option(..., "--url", help="Media server base URL"),
+    token: str | None = typer.Option(None, "--token", help="API token or authentication key"),
+    library_id: str | None = typer.Option(
+        None, "--library-id", help="Optional specific library ID"
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--no-dry-run", help="Simulate request without invoking server endpoint"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+) -> None:
+    """Diagnostic command to test connectivity and authenticated library rescan on a media server."""
+    from media_cron.metadata.media_servers import get_media_server_client
+    from media_cron.metadata.models import MediaServerConfig
+
+    cfg = MediaServerConfig(
+        enabled=True,
+        provider=provider,
+        url=url,
+        token=token or "",
+        library_id=library_id,
+        timeout_seconds=5.0,
+        max_retries=0,
+    )
+
+    try:
+        client = get_media_server_client(provider)
+        res = client.trigger_rescan(
+            config=cfg,
+            library_id=library_id,
+            dry_run=dry_run,
+        )
+    except Exception as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"status": "error", "error": str(e)}))
+        else:
+            typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    status = "success" if res.success else "failed"
+
+    if format.lower() == "json":
+        payload = {
+            "status": status,
+            "server_type": res.server_type,
+            "endpoint": res.endpoint,
+            "status_code": res.status_code,
+            "duration_seconds": round(res.duration_seconds, 2),
+            "dry_run": dry_run,
+        }
+        if res.error:
+            payload["error"] = res.error
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        lines = [
+            "=== Media Server Notification Diagnostic ===",
+            f"Status:         {status}",
+            f"Server Type:    {res.server_type}",
+            f"Endpoint:       {res.endpoint}",
+            f"Status Code:    {res.status_code if res.status_code is not None else 'N/A'}",
+            f"Duration:       {res.duration_seconds:.2f}s",
+            f"Mode:           {'[DRY-RUN SIMULATION]' if dry_run else '[LIVE EXECUTION]'}",
+        ]
+        if res.error:
+            lines.append(f"Error:          {res.error}")
+        else:
+            lines.append(
+                f"Successfully notified {res.server_type} library rescan at {res.endpoint}"
+            )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS if res.success else 1)
 
 
 def main() -> None:

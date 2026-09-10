@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+from pathlib import Path
 
 from media_cron.models import (
     OperationPlan,
@@ -51,11 +52,38 @@ class LibraryOrganizerOutput(OutputPlugin):
             )
 
         # 1. Collision detection
+        target_to_compare: Path | None = None
         if dest.exists():
+            target_to_compare = dest
+        elif dest.parent.exists() and dest.suffix.lower() in (
+            ".mkv",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".wmv",
+            ".m4v",
+        ):
+            # Check if an alternative quality variant already exists in the destination directory
+            video_siblings = [
+                p
+                for p in dest.parent.iterdir()
+                if p.is_file()
+                and p.suffix.lower() in (".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v")
+            ]
+            tv_match = re.search(r"S\d{2}E\d{2}", dest.name, re.IGNORECASE)
+            if tv_match:
+                ep_code = tv_match.group(0).lower()
+                matched = [p for p in video_siblings if ep_code in p.name.lower()]
+                if matched:
+                    target_to_compare = matched[0]
+            elif video_siblings:
+                target_to_compare = video_siblings[0]
+
+        if target_to_compare is not None:
             # Check identical (same inode or size)
-            if dest.stat().st_size == src.stat().st_size:
+            if target_to_compare.stat().st_size == src.stat().st_size:
                 try:
-                    if dest.stat().st_ino == src.stat().st_ino:
+                    if target_to_compare.stat().st_ino == src.stat().st_ino:
                         return OperationResult(
                             plan=plan,
                             status=OperationStatus.SKIPPED,
@@ -71,23 +99,25 @@ class LibraryOrganizerOutput(OutputPlugin):
 
             # Check quality comparison
             src_rank = max(self._get_quality_rank(src.name), self._get_quality_rank(plan.reason))
-            dest_rank = self._get_quality_rank(dest.name)
+            dest_rank = self._get_quality_rank(target_to_compare.name)
 
             should_upgrade = False
             if dest_rank > 0 and src_rank > 0:
                 if src_rank > dest_rank:
                     should_upgrade = True
-                elif src_rank == dest_rank and src.stat().st_size > dest.stat().st_size:
+                elif (
+                    src_rank == dest_rank and src.stat().st_size > target_to_compare.stat().st_size
+                ):
                     should_upgrade = True
             else:
                 # If destination has no resolution tag, compare file size
-                if src.stat().st_size > dest.stat().st_size:
+                if src.stat().st_size > target_to_compare.stat().st_size:
                     should_upgrade = True
 
             if should_upgrade:
                 plan.op_type = OperationType.UPGRADE_REPLACE
                 if not plan.dry_run:
-                    dest.unlink()
+                    target_to_compare.unlink()
             else:
                 plan.op_type = OperationType.SKIP_COLLISION
                 return OperationResult(

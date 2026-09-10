@@ -522,3 +522,219 @@ class MusicSpoolResult:
     post_command_executed: bool = False
     post_command_exit_code: int | None = None
     error: str | None = None
+
+
+# ==============================================================================
+# Video Subsystem Models
+# ==============================================================================
+
+
+class VideoWorkflowMode(StrEnum):
+    SPOOL = "spool"
+    DIRECT = "direct"
+    HYBRID = "hybrid"
+
+
+class VideoFormat(StrEnum):
+    MKV = "mkv"
+    MP4 = "mp4"
+    AVI = "avi"
+    MOV = "mov"
+    WMV = "wmv"
+    M4V = "m4v"
+    TS = "ts"
+    WEBM = "webm"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_path(cls, path: Path) -> VideoFormat:
+        ext = path.suffix.lower().lstrip(".")
+        for fmt in cls:
+            if fmt.value == ext:
+                return fmt
+        return cls.UNKNOWN
+
+
+class VideoCompanionType(StrEnum):
+    SUBTITLE = "subtitle"
+    ARTWORK = "artwork"
+    METADATA_NFO = "metadata_nfo"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_path(cls, path: Path) -> VideoCompanionType:
+        ext = path.suffix.lower()
+        name = path.name.lower()
+        if ext in (".srt", ".vtt", ".ass", ".ssa", ".sub", ".idx"):
+            return cls.SUBTITLE
+        if ext in (".jpg", ".jpeg", ".png", ".webp") and any(
+            k in name for k in ("poster", "fanart", "banner", "folder", "cover", "thumb")
+        ):
+            return cls.ARTWORK
+        if ext == ".nfo":
+            return cls.METADATA_NFO
+        return cls.UNKNOWN
+
+
+@dataclass
+class VideoCompanionAsset:
+    path: Path
+    asset_type: VideoCompanionType
+    file_size: int
+    language: str | None = None
+    descriptor: str | None = None
+
+    @classmethod
+    def from_path(cls, path: Path) -> VideoCompanionAsset:
+        asset_type = VideoCompanionType.from_path(path)
+        try:
+            file_size = path.stat().st_size if path.exists() else 0
+        except OSError:
+            file_size = 0
+        lang, desc = None, None
+        if asset_type == VideoCompanionType.SUBTITLE:
+            lang, desc = cls.extract_sub_tags(path.name)
+        return cls(
+            path=path, asset_type=asset_type, file_size=file_size, language=lang, descriptor=desc
+        )
+
+    @staticmethod
+    def extract_sub_tags(filename: str) -> tuple[str | None, str | None]:
+        stem = Path(filename).stem.lower()
+        parts = stem.split(".")
+        lang = None
+        desc = None
+        descriptors = {"forced", "sdh", "cc", "default", "hi"}
+        common_langs = {
+            "en",
+            "eng",
+            "english",
+            "es",
+            "spa",
+            "spanish",
+            "fr",
+            "fre",
+            "fra",
+            "french",
+            "de",
+            "ger",
+            "deu",
+            "german",
+            "it",
+            "ita",
+            "italian",
+            "pt",
+            "por",
+            "portuguese",
+            "ja",
+            "jpn",
+            "japanese",
+            "zh",
+            "chi",
+            "zho",
+            "chinese",
+            "ru",
+            "rus",
+            "russian",
+            "nl",
+            "dut",
+            "nld",
+            "dutch",
+            "pl",
+            "pol",
+            "polish",
+            "sv",
+            "swe",
+            "swedish",
+            "no",
+            "nor",
+            "norwegian",
+            "da",
+            "dan",
+            "danish",
+            "fi",
+            "fin",
+            "finnish",
+        }
+        for part in parts[1:]:
+            p = part.lower().strip("-_ []()")
+            if p in descriptors and not desc:
+                desc = p
+            elif p in common_langs and not lang:
+                lang = p
+        return lang, desc
+
+
+@dataclass
+class VideoTrack:
+    path: Path
+    title: str
+    file_size: int
+    format: VideoFormat
+    show_title: str | None = None
+    season_number: int | None = None
+    episode_number: int | None = None
+    episode_end_number: int | None = None
+    year: int | None = None
+    resolution: str | None = None
+    source_quality: str | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    is_sample: bool = False
+    is_valid: bool = True
+
+
+@dataclass
+class VideoReleaseBundle:
+    bundle_id: str
+    root_path: Path
+    release_title: str
+    is_series: bool = False
+    show_title: str | None = None
+    season_number: int | None = None
+    year: int | None = None
+    primary_videos: list[VideoTrack] = field(default_factory=list)
+    companion_assets: list[VideoCompanionAsset] = field(default_factory=list)
+
+
+@dataclass
+class VideoSpoolResult:
+    bundle_id: str
+    source_dir: Path
+    target_dir: Path
+    file_count: int
+    bytes_transferred: int
+    mode: str
+    success: bool
+    skipped: bool = False
+    skip_reason: str | None = None
+    post_command_executed: bool = False
+    post_command_exit_code: int | None = None
+    error: str | None = None
+
+
+class MediaServerType(StrEnum):
+    JELLYFIN = "jellyfin"
+    EMBY = "emby"
+    PLEX = "plex"
+
+
+@dataclass
+class MediaServerConfig:
+    enabled: bool = False
+    provider: str = "jellyfin"
+    url: str = ""
+    token: str = ""
+    library_id: str | None = None
+    timeout_seconds: float = 5.0
+    max_retries: int = 0
+
+
+@dataclass
+class MediaServerRescanResult:
+    server_type: str
+    endpoint: str
+    status_code: int | None
+    duration_seconds: float
+    success: bool
+    error: str | None = None

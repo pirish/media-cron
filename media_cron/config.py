@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from media_cron.metadata.models import MediaServerConfig
 from media_cron.torrent.models import (
     PathMappingRule,
     TorrentClientConfig,
@@ -200,6 +201,23 @@ class MusicConfig:
 
 
 @dataclass
+class VideoConfig:
+    enabled: bool = True
+    workflow_mode: str = "direct"  # "spool" | "direct" | "hybrid"
+    spool_dir: Path | None = None
+    post_ingest_command: str | None = None
+    post_command_timeout_seconds: int = 120
+    preserve_companions: bool = True
+    library_movies_dir: str = "Movies"
+    library_tv_dir: str = "TV"
+    movie_path_template: str = (
+        "{library_movies_dir}/{title} ({year})/{title} ({year}) [{resolution}].{ext}"
+    )
+    tv_path_template: str = "{library_tv_dir}/{show}/Season {season:02d}/{show} - S{season:02d}E{episode:02d} - {title} [{resolution}].{ext}"
+    media_server: MediaServerConfig = field(default_factory=MediaServerConfig)
+
+
+@dataclass
 class MediaCronConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     general: GeneralConfig = field(default_factory=GeneralConfig)
@@ -211,6 +229,7 @@ class MediaCronConfig:
     audiobook: AudiobookConfig = field(default_factory=AudiobookConfig)
     books: BooksConfig = field(default_factory=BooksConfig)
     music: MusicConfig = field(default_factory=MusicConfig)
+    video: VideoConfig = field(default_factory=lambda: VideoConfig(enabled=False))
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -460,6 +479,44 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.music.providers[pname] = prov_cfg
 
+            if "video" in data and isinstance(data["video"], dict):
+                v = data["video"]
+                cfg.video.enabled = bool(v.get("enabled", True))
+                if "workflow_mode" in v:
+                    cfg.video.workflow_mode = str(v["workflow_mode"])
+                if "spool_dir" in v and v["spool_dir"]:
+                    cfg.video.spool_dir = Path(v["spool_dir"])
+                if "post_ingest_command" in v:
+                    cfg.video.post_ingest_command = v["post_ingest_command"]
+                if "post_command_timeout_seconds" in v:
+                    cfg.video.post_command_timeout_seconds = int(v["post_command_timeout_seconds"])
+                if "preserve_companions" in v:
+                    cfg.video.preserve_companions = bool(v["preserve_companions"])
+                if "library_movies_dir" in v:
+                    cfg.video.library_movies_dir = str(v["library_movies_dir"])
+                if "library_tv_dir" in v:
+                    cfg.video.library_tv_dir = str(v["library_tv_dir"])
+                if "movie_path_template" in v:
+                    cfg.video.movie_path_template = str(v["movie_path_template"])
+                if "tv_path_template" in v:
+                    cfg.video.tv_path_template = str(v["tv_path_template"])
+                if "media_server" in v and isinstance(v["media_server"], dict):
+                    ms = v["media_server"]
+                    if "enabled" in ms:
+                        cfg.video.media_server.enabled = bool(ms["enabled"])
+                    if "provider" in ms:
+                        cfg.video.media_server.provider = str(ms["provider"]).lower()
+                    if "url" in ms:
+                        cfg.video.media_server.url = str(ms["url"])
+                    if "token" in ms:
+                        cfg.video.media_server.token = str(ms["token"])
+                    if "library_id" in ms:
+                        cfg.video.media_server.library_id = ms["library_id"]
+                    if "timeout_seconds" in ms:
+                        cfg.video.media_server.timeout_seconds = float(ms["timeout_seconds"])
+                    if "max_retries" in ms:
+                        cfg.video.media_server.max_retries = int(ms["max_retries"])
+
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
         if env_source:
@@ -657,5 +714,70 @@ class MediaCronConfig:
         )
         if cfg.music.spool_dir and not is_mode_explicit:
             cfg.music.workflow_mode = "spool"
+
+        # Video environment overrides
+        env_video_enabled = os.getenv("MEDIA_CRON_VIDEO_ENABLED")
+        if env_video_enabled is not None:
+            cfg.video.enabled = env_video_enabled.lower() in ("true", "1", "yes")
+        elif any(
+            os.getenv(k) is not None
+            for k in (
+                "MEDIA_CRON_VIDEO_MODE",
+                "MEDIA_CRON_VIDEO_SPOOL_DIR",
+                "MEDIA_CRON_VIDEO_POST_COMMAND",
+                "MEDIA_CRON_MEDIA_SERVER_ENABLED",
+            )
+        ):
+            cfg.video.enabled = True
+
+        env_video_mode = os.getenv("MEDIA_CRON_VIDEO_MODE")
+        if env_video_mode is not None:
+            cfg.video.workflow_mode = env_video_mode.lower()
+
+        env_video_spool_dir = os.getenv("MEDIA_CRON_VIDEO_SPOOL_DIR")
+        if env_video_spool_dir is not None:
+            cfg.video.spool_dir = Path(env_video_spool_dir)
+
+        env_video_post_cmd = os.getenv("MEDIA_CRON_VIDEO_POST_COMMAND")
+        if env_video_post_cmd is not None:
+            cfg.video.post_ingest_command = env_video_post_cmd
+
+        env_video_companions = os.getenv("MEDIA_CRON_VIDEO_PRESERVE_COMPANIONS")
+        if env_video_companions is not None:
+            cfg.video.preserve_companions = env_video_companions.lower() in ("true", "1", "yes")
+
+        env_ms_enabled = os.getenv("MEDIA_CRON_MEDIA_SERVER_ENABLED")
+        if env_ms_enabled is not None:
+            cfg.video.media_server.enabled = env_ms_enabled.lower() in ("true", "1", "yes")
+
+        env_ms_provider = os.getenv("MEDIA_CRON_MEDIA_SERVER_PROVIDER")
+        if env_ms_provider is not None:
+            cfg.video.media_server.provider = env_ms_provider.lower()
+
+        env_ms_url = os.getenv("MEDIA_CRON_MEDIA_SERVER_URL")
+        if env_ms_url is not None:
+            cfg.video.media_server.url = env_ms_url
+
+        env_ms_token = os.getenv("MEDIA_CRON_MEDIA_SERVER_TOKEN")
+        if env_ms_token is not None:
+            cfg.video.media_server.token = env_ms_token
+
+        env_ms_lib = os.getenv("MEDIA_CRON_MEDIA_SERVER_LIBRARY_ID")
+        if env_ms_lib is not None:
+            cfg.video.media_server.library_id = env_ms_lib
+
+        env_ms_retries = os.getenv("MEDIA_CRON_MEDIA_SERVER_MAX_RETRIES")
+        if env_ms_retries is not None:
+            cfg.video.media_server.max_retries = int(env_ms_retries)
+
+        # Dynamic default resolution: if spool_dir is set and mode wasn't explicitly given
+        is_video_mode_explicit = env_video_mode is not None or (
+            "data" in locals()
+            and isinstance(data, dict)
+            and "video" in data
+            and "workflow_mode" in data["video"]
+        )
+        if cfg.video.spool_dir and not is_video_mode_explicit:
+            cfg.video.workflow_mode = "spool"
 
         return cfg

@@ -3,10 +3,14 @@ from typing import Protocol, runtime_checkable
 
 from media_cron.config import ExternalProviderConfig
 from media_cron.metadata.models import (
+    MediaServerConfig,
+    MediaServerRescanResult,
     MetadataMatch,
     MusicCatalogMatch,
     MusicReleaseBundle,
     MusicSpoolResult,
+    VideoReleaseBundle,
+    VideoSpoolResult,
 )
 
 
@@ -137,4 +141,66 @@ class MusicMetadataProviderProtocol(Protocol):
         timeout_seconds: int = 10,
     ) -> list[MusicCatalogMatch]:
         """Query external catalog for matching music releases."""
+        ...
+
+
+@runtime_checkable
+class VideoSpoolEngineProtocol(Protocol):
+    """Protocol for depositing video releases into external manager drop folders."""
+
+    def stage_bundle(
+        self,
+        bundle: VideoReleaseBundle,
+        spool_dir: Path,
+        dry_run: bool = False,
+    ) -> Path:
+        """Transfers all primary videos and companion assets into a hidden staging folder (.incoming_<name>) on the spool filesystem."""
+        ...
+
+    def promote_bundle(
+        self,
+        staging_dir: Path,
+        final_dir: Path,
+        dry_run: bool = False,
+    ) -> Path | None:
+        """Atomically renames the staging folder to the final release path. Returns None if skipped due to collision."""
+        ...
+
+    def execute_post_command(
+        self,
+        command_template: str,
+        release_path: Path,
+        timeout_seconds: int = 120,
+    ) -> tuple[int, str]:
+        """Executes a configured post-ingest command returning (exit_code, output)."""
+        ...
+
+    def spool_release(
+        self,
+        bundle: VideoReleaseBundle,
+        spool_dir: Path,
+        post_command: str | None = None,
+        dry_run: bool = False,
+    ) -> VideoSpoolResult:
+        """Coordinates staging, promotion, and optional post-ingest hook execution."""
+        ...
+
+
+@runtime_checkable
+class MediaServerClientProtocol(Protocol):
+    """Protocol for media player/server library rescan notifications."""
+
+    @property
+    def server_type(self) -> str:
+        """Returns the media server identifier: 'jellyfin', 'emby', or 'plex'."""
+        ...
+
+    def trigger_rescan(
+        self,
+        config: MediaServerConfig,
+        library_id: str | None = None,
+        path: str | None = None,
+        dry_run: bool = False,
+    ) -> MediaServerRescanResult:
+        """Dispatches an authenticated HTTP rescan request to the media server."""
         ...
