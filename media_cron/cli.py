@@ -308,6 +308,16 @@ def run_command(
         "--media-server-max-retries",
         help="Max retry attempts for rescan notifications",
     ),
+    review_dir: Path | None = typer.Option(
+        None,
+        "--review-dir",
+        help="Directory to stage unrecognized media for manual review",
+    ),
+    review_max_age_days: int | None = typer.Option(
+        None,
+        "--review-max-age-days",
+        help="Retention limit in days for items in review directory (0 = disabled)",
+    ),
     format: str = typer.Option("text", "--format", "-f", help="Output stream format: text or json"),
     config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
@@ -418,6 +428,12 @@ def run_command(
         cfg.video.media_server.library_id = media_server_library_id
     if media_server_max_retries is not None:
         cfg.video.media_server.max_retries = media_server_max_retries
+
+    # Review CLI overrides
+    if review_dir is not None:
+        cfg.paths.review_dir = review_dir
+    if review_max_age_days is not None:
+        cfg.review.max_age_days = review_max_age_days
 
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:
@@ -1392,6 +1408,470 @@ def test_media_server_notify(
             )
         typer.echo("\n".join(lines))
     raise typer.Exit(code=EXIT_SUCCESS if res.success else 1)
+
+
+review_app = typer.Typer(
+    name="review",
+    help="Review and manage unrecognized media items.",
+    invoke_without_command=True,
+    add_completion=False,
+)
+
+
+def _get_review_dir(review_dir: Path | None, config_path: Path | None) -> Path:
+    if review_dir is not None:
+        return review_dir
+    cfg = MediaCronConfig.load(config_path=config_path)
+    if cfg.paths.review_dir is not None:
+        return cfg.paths.review_dir
+    typer.echo(
+        "Error: --review-dir must be specified via CLI or config file.",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def _is_interactive() -> bool:
+    import sys
+
+    return sys.stdin.isatty()
+
+
+@review_app.callback(invoke_without_command=True)
+def review_interactive(
+    ctx: typer.Context,
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Interactive guided review session for pending items."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not _is_interactive():
+        typer.echo(
+            "Error: Interactive review requires an interactive terminal (TTY). "
+            "Use 'media-cron review list' or non-interactive subcommands instead.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    cfg = MediaCronConfig.load(config_path=config)
+
+    from media_cron.review.manager import ReviewManager
+    from media_cron.review.models import ReviewAction, ReviewStatus, UserAnnotation
+
+    manager = ReviewManager(review_dir=target_review_dir)
+    pending_items = manager.list_items(status=ReviewStatus.PENDING)
+
+    if not pending_items:
+        typer.echo("No items pending review.")
+        raise typer.Exit(code=EXIT_SUCCESS)
+
+    typer.echo(f"Found {len(pending_items)} item(s) pending review in {target_review_dir}:\n")
+
+    for item in pending_items:
+        typer.echo(f"=== Review Item: {item.item_id} ===")
+        typer.echo(f"  Original: {item.original_path}")
+        typer.echo(f"  Files:    {len(item.files)} file(s), {item.total_size_bytes} bytes")
+        if item.failure_reasons:
+            typer.echo(f"  Failures: {', '.join(item.failure_reasons)}")
+
+        hint = item.detected_category_hint or "movie"
+        category = typer.prompt("Category", default=hint)
+        title = typer.prompt("Title", default="")
+        year_str = typer.prompt("Year", default="")
+        creator = typer.prompt("Creator/Artist/Author", default="")
+
+        action_choice = typer.prompt(
+            "Action: [O]rganize Now, [R]eturn to Staging, [D]iscard, [S]kip, [Q]uit",
+            default="s",
+        )
+        choice = action_choice.strip().lower()
+        if choice.startswith("q"):
+            typer.echo("Exiting review session.")
+            break
+        elif choice.startswith("s"):
+            typer.echo(f"Skipped {item.item_id}.")
+            continue
+        elif choice.startswith("o"):
+            year = int(year_str) if year_str.isdigit() else None
+            annotation = UserAnnotation(
+                category=category,
+                title=title,
+                year=year,
+                creator=creator if creator else None,
+            )
+            manager.resolve_item(
+                item_id=item.item_id,
+                annotation=annotation,
+                action=ReviewAction.ORGANIZE_NOW,
+                config=cfg,
+            )
+            typer.echo(f"Organized {item.item_id}.")
+        elif choice.startswith("r"):
+            year = int(year_str) if year_str.isdigit() else None
+            annotation = UserAnnotation(
+                category=category,
+                title=title,
+                year=year,
+                creator=creator if creator else None,
+            )
+            manager.resolve_item(
+                item_id=item.item_id,
+                annotation=annotation,
+                action=ReviewAction.REINGEST,
+                config=cfg,
+            )
+            typer.echo(f"Returned {item.item_id} to staging.")
+        elif choice.startswith("d"):
+            confirm = typer.confirm(
+                f"Are you sure you want to discard {item.item_id}?", default=False
+            )
+            if confirm:
+                annotation = UserAnnotation(
+                    category=category,
+                    title=title,
+                )
+                manager.resolve_item(
+                    item_id=item.item_id,
+                    annotation=annotation,
+                    action=ReviewAction.DISCARD,
+                    config=cfg,
+                )
+                typer.echo(f"Discarded {item.item_id}.")
+            else:
+                typer.echo(f"Skipped discarding {item.item_id}.")
+
+
+@review_app.command("list")
+def review_list(
+    status: str = typer.Option(
+        "pending",
+        "--status",
+        help="Filter items by status: pending, resolved, reingested, discarded, all",
+    ),
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    format: str = typer.Option(
+        "text", "--format", "-f", help="Output display format: text or json"
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Lists items staged in the review directory."""
+    from media_cron.review.manager import ReviewManager
+    from media_cron.review.models import ReviewStatus
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    manager = ReviewManager(review_dir=target_review_dir)
+
+    filter_status: ReviewStatus | None = None
+    if status.lower() != "all":
+        try:
+            filter_status = ReviewStatus(status.lower())
+        except ValueError:
+            msg = (
+                f"Invalid status: {status}. Allowed: pending, resolved, reingested, discarded, all"
+            )
+            if format.lower() == "json":
+                typer.echo(json.dumps({"error": msg, "exit_code": 2}))
+            else:
+                typer.echo(f"Error: {msg}", err=True)
+            raise typer.Exit(code=2) from None
+
+    items = manager.list_items(status=filter_status)
+
+    if format.lower() == "json":
+        typer.echo(json.dumps([m.to_dict() for m in items], indent=2))
+    else:
+        lines = [
+            "=== Staged Review Items ===",
+            f"Review Directory: {target_review_dir}",
+            f"Total Items:     {len(items)}",
+            "--------------------------------------------------------------------------------",
+        ]
+        if not items:
+            lines.append("No items found.")
+        else:
+            for item in items:
+                files_str = ", ".join(f.relative_path.name for f in item.files)
+                lines.append(
+                    f"ID:       {item.item_id}\n"
+                    f"Files:    {files_str} ({item.original_path})\n"
+                    f"Category: {item.detected_category_hint or 'unknown'}\n"
+                    f"Status:   {item.status.value}\n"
+                    f"Size:     {item.total_size_bytes} bytes\n"
+                    f"Created:  {item.created_at.isoformat()}\n"
+                    "--------------------------------------------------------------------------------"
+                )
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@review_app.command("show")
+def review_show(
+    item_id: str = typer.Argument(..., help="ID of review item to inspect"),
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    format: str = typer.Option(
+        "text", "--format", "-f", help="Output display format: text or json"
+    ),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Displays detailed manifest and files for a specific review item."""
+    from media_cron.review.manager import ReviewManager
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    manager = ReviewManager(review_dir=target_review_dir)
+
+    try:
+        manifest = manager.get_item(item_id)
+    except FileNotFoundError as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"error": str(e), "exit_code": 1}))
+        else:
+            typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if format.lower() == "json":
+        typer.echo(json.dumps(manifest.to_dict(), indent=2))
+    else:
+        lines = [
+            f"=== Review Item: {manifest.item_id} ===",
+            f"Original Path: {manifest.original_path}",
+            f"Is Directory:  {manifest.is_directory}",
+            f"Status:        {manifest.status.value}",
+            f"Category Hint: {manifest.detected_category_hint or 'None'}",
+            f"Total Size:    {manifest.total_size_bytes} bytes",
+            f"Created At:    {manifest.created_at.isoformat()}",
+        ]
+        if manifest.failure_reasons:
+            lines.append("Failure Reasons:")
+            for r in manifest.failure_reasons:
+                lines.append(f"  - {r}")
+        lines.append("Contained Files:")
+        for f in manifest.files:
+            lines.append(f"  - {f.relative_path} ({f.size_bytes} bytes)")
+        if manifest.user_annotation:
+            lines.append("User Annotation:")
+            ann = manifest.user_annotation
+            lines.append(f"  Category: {ann.category}")
+            lines.append(f"  Title:    {ann.title}")
+            if ann.creator:
+                lines.append(f"  Creator:  {ann.creator}")
+            if ann.year:
+                lines.append(f"  Year:     {ann.year}")
+        typer.echo("\n".join(lines))
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@review_app.command("resolve")
+def review_resolve(
+    item_id: str = typer.Argument(..., help="ID of review item to resolve"),
+    category: str = typer.Option(
+        ..., "--category", help="Target category (movie, tv, music, book, audiobook)"
+    ),
+    title: str = typer.Option(..., "--title", help="Title of the media asset"),
+    creator: str | None = typer.Option(None, "--creator", help="Creator/Artist/Author"),
+    year: int | None = typer.Option(None, "--year", help="Release year"),
+    season: int | None = typer.Option(None, "--season", help="Season number (for TV)"),
+    episode: int | None = typer.Option(None, "--episode", help="Episode number (for TV)"),
+    action: str = typer.Option(
+        "organize", "--action", help="Action to execute: organize or reingest"
+    ),
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Simulate without writing files"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Applies user metadata and executes resolution action (organize or reingest)."""
+    from media_cron.review.manager import ReviewManager
+    from media_cron.review.models import ReviewAction, UserAnnotation
+
+    act = action.lower()
+    if act in ("organize", "organize_now"):
+        rev_action = ReviewAction.ORGANIZE_NOW
+    elif act == "reingest":
+        rev_action = ReviewAction.REINGEST
+    else:
+        msg = f"Invalid action: {action}. Allowed: organize, reingest"
+        if format.lower() == "json":
+            typer.echo(json.dumps({"error": msg, "exit_code": 2}))
+        else:
+            typer.echo(f"Error: {msg}", err=True)
+        raise typer.Exit(code=2)
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    cfg = MediaCronConfig.load(config_path=config)
+    manager = ReviewManager(review_dir=target_review_dir)
+
+    annotation = UserAnnotation(
+        category=category,
+        title=title,
+        creator=creator,
+        year=year,
+        season=season,
+        episode=episode,
+    )
+
+    try:
+        manifest = manager.resolve_item(
+            item_id=item_id,
+            annotation=annotation,
+            action=rev_action,
+            config=cfg,
+            dry_run=dry_run,
+        )
+    except FileNotFoundError as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"error": str(e), "exit_code": 1}))
+        else:
+            typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if format.lower() == "json":
+        typer.echo(json.dumps(manifest.to_dict(), indent=2))
+    else:
+        typer.echo(f"Successfully resolved item '{item_id}' with action '{act}'.")
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@review_app.command("discard")
+def review_discard(
+    item_id: str = typer.Argument(..., help="ID of review item to discard"),
+    force: bool = typer.Option(False, "--force", help="Force discard without confirmation"),
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Simulate without deleting files"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Deletes an item from the review directory."""
+    from media_cron.review.manager import ReviewManager
+    from media_cron.review.models import ReviewAction, UserAnnotation
+
+    if not force:
+        if not _is_interactive():
+            msg = "Error: --force is required in non-interactive mode to discard items."
+            if format.lower() == "json":
+                typer.echo(json.dumps({"error": msg, "exit_code": 1}))
+            else:
+                typer.echo(msg, err=True)
+            raise typer.Exit(code=1)
+        confirm = typer.confirm(
+            f"Are you sure you want to discard review item '{item_id}'?", default=False
+        )
+        if not confirm:
+            typer.echo("Discard cancelled.")
+            raise typer.Exit(code=EXIT_SUCCESS)
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    cfg = MediaCronConfig.load(config_path=config)
+    manager = ReviewManager(review_dir=target_review_dir)
+
+    try:
+        manager.resolve_item(
+            item_id=item_id,
+            annotation=UserAnnotation(category="discarded", title="discarded"),
+            action=ReviewAction.DISCARD,
+            config=cfg,
+            dry_run=dry_run,
+        )
+    except FileNotFoundError as e:
+        if format.lower() == "json":
+            typer.echo(json.dumps({"error": str(e), "exit_code": 1}))
+        else:
+            typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if format.lower() == "json":
+        typer.echo(
+            json.dumps(
+                {"status": "discarded", "item_id": item_id, "dry_run": dry_run},
+                indent=2,
+            )
+        )
+    else:
+        typer.echo(f"Discarded review item '{item_id}'.")
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+@review_app.command("purge")
+def review_purge(
+    older_than: int = typer.Option(
+        ..., "--older-than", help="Purge items older than this number of days"
+    ),
+    force: bool = typer.Option(False, "--force", help="Force purge without confirmation"),
+    review_dir: Path | None = typer.Option(
+        None, "--review-dir", help="Directory containing staged review items"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Simulate without deleting files"),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: text or json"),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Purges items staged longer than the specified age in days."""
+    from media_cron.review.manager import ReviewManager
+
+    if not force:
+        if not _is_interactive():
+            msg = "Error: --force is required in non-interactive mode to purge items."
+            if format.lower() == "json":
+                typer.echo(json.dumps({"error": msg, "exit_code": 1}))
+            else:
+                typer.echo(msg, err=True)
+            raise typer.Exit(code=1)
+        confirm = typer.confirm(
+            f"Are you sure you want to purge items older than {older_than} day(s)?",
+            default=False,
+        )
+        if not confirm:
+            typer.echo("Purge cancelled.")
+            raise typer.Exit(code=EXIT_SUCCESS)
+
+    target_review_dir = _get_review_dir(review_dir, config)
+    manager = ReviewManager(review_dir=target_review_dir)
+
+    purged_ids = manager.purge_items(older_than_days=older_than, dry_run=dry_run)
+
+    if format.lower() == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "success",
+                    "purged_count": len(purged_ids),
+                    "purged_items": purged_ids,
+                    "older_than_days": older_than,
+                    "dry_run": dry_run,
+                },
+                indent=2,
+            )
+        )
+    else:
+        action_word = "Would purge" if dry_run else "Purged"
+        typer.echo(f"{action_word} {len(purged_ids)} item(s) older than {older_than} day(s).")
+    raise typer.Exit(code=EXIT_SUCCESS)
+
+
+app.add_typer(review_app, name="review")
 
 
 def main() -> None:

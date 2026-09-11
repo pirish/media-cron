@@ -51,6 +51,8 @@ class Pipeline:
         self._last_books_summary: dict | None = None
         self._last_music_summary: dict | None = None
         self._last_video_summary: dict | None = None
+        self._last_unrecognized_count: int = 0
+        self._last_review_staged_count: int = 0
 
     def _get_video_summary(self) -> dict | None:
         if not getattr(self.config, "video", None) or not self.config.video.enabled:
@@ -359,6 +361,7 @@ class Pipeline:
                 }
 
         planned_subtitle_paths: set[Path] = set()
+        unhandled_items: list[DiscoveredItem] = []
 
         for item in discovered_items:
             path = item.source_path
@@ -520,16 +523,49 @@ class Pipeline:
                     break
 
             if not handled:
-                # Non-media clutter or unsupported files purged from staging
-                plans.append(
-                    OperationPlan(
-                        op_type=OperationType.PURGE_JUNK,
-                        transfer_mode=mode,
-                        source_path=path,
-                        destination_path=None,
-                        reason=f"Unrecognized non-media clutter: '{path.name}'",
-                        dry_run=True,
-                    )
+                unhandled_items.append(item)
+
+        unrecognized_groups: dict[Path, list[DiscoveredItem]] = {}
+        for unrec_item in unhandled_items:
+            p = unrec_item.source_path
+            try:
+                rel = p.relative_to(staging_path)
+                if len(rel.parts) > 1:
+                    root = staging_path / rel.parts[0]
+                else:
+                    root = p
+            except ValueError:
+                root = p
+            unrecognized_groups.setdefault(root, []).append(unrec_item)
+
+        self._last_unrecognized_count = len(unrecognized_groups)
+        self._last_review_staged_count = 0
+
+        review_enabled = (
+            getattr(self.config, "review", None)
+            and self.config.review.enabled
+            and self.config.paths.review_dir
+        )
+
+        for root, group_items in unrecognized_groups.items():
+            if review_enabled:
+                self._last_review_staged_count += 1
+                plan = OperationPlan(
+                    op_type=OperationType.REVIEW_STAGE,
+                    transfer_mode=mode,
+                    source_path=root,
+                    destination_path=self.config.paths.review_dir,
+                    reason=f"Unrecognized media '{root.name}' staged for manual review",
+                    dry_run=True,
+                )
+                plan.unrecognized_files = [i.source_path for i in group_items]
+                plans.append(plan)
+            else:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Unrecognized item '%s' cannot be automatically identified; review_dir not configured, leaving in staging",
+                    root.name,
                 )
 
         if torrent_plugin and torrent_plugin.processed_torrents:
@@ -686,6 +722,8 @@ class Pipeline:
                 ),
                 skipped_count=0,
                 error_count=0,
+                unrecognized_count=self._last_unrecognized_count,
+                review_staged_count=self._last_review_staged_count,
                 operations=results,
                 dry_run=True,
                 exit_code=EXIT_SUCCESS,
@@ -728,6 +766,7 @@ class Pipeline:
                 junk_count = 0
                 skipped_count = 0
                 error_count = 0
+                review_staged_count = 0
                 if is_video_spool:
                     spool_engine = VideoSpoolEngine()
                     aggregator = VideoReleaseBundleAggregator(
@@ -801,6 +840,49 @@ class Pipeline:
                                 error=plan.reason,
                             )
                         )
+                        continue
+
+                    if plan.op_type == OperationType.REVIEW_STAGE:
+                        if self.config.paths.review_dir:
+                            from media_cron.review.manager import ReviewManager
+
+                            review_mgr = ReviewManager(self.config.paths.review_dir)
+                            source_paths = getattr(plan, "unrecognized_files", [plan.source_path])
+
+                            seeding_paths = set()
+                            if torrent_plugin and torrent_plugin.processed_torrents:
+                                for t in torrent_plugin.processed_torrents:
+                                    for tf in getattr(t, "files", []):
+                                        seeding_paths.add(Path(tf).resolve())
+
+                            try:
+                                review_mgr.stage_unrecognized(
+                                    source_paths=source_paths,
+                                    config=self.config,
+                                    failure_reasons=[
+                                        "Unrecognized media or metadata lookup failure"
+                                    ],
+                                    seeding_paths=seeding_paths,
+                                    dry_run=False,
+                                )
+                                review_staged_count += 1
+                                results.append(
+                                    OperationResult(
+                                        plan=plan,
+                                        status=OperationStatus.SUCCESS,
+                                        message=plan.reason,
+                                    )
+                                )
+                            except Exception as e:
+                                error_count += 1
+                                errors.append(f"Failed to stage to review: {e}")
+                                results.append(
+                                    OperationResult(
+                                        plan=plan,
+                                        status=OperationStatus.FAILED,
+                                        error=str(e),
+                                    )
+                                )
                         continue
 
                     plan.dry_run = False
@@ -970,6 +1052,8 @@ class Pipeline:
                     junk_purged_count=junk_count,
                     skipped_count=skipped_count,
                     error_count=error_count,
+                    unrecognized_count=self._last_unrecognized_count,
+                    review_staged_count=review_staged_count,
                     errors=errors,
                     operations=results,
                     dry_run=False,

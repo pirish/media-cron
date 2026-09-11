@@ -1,0 +1,104 @@
+# Implementation Plan: Unrecognized Media Staging and Interactive Manual Review
+
+**Branch**: `007-unrecognized-files-staging` | **Date**: 2026-09-09 | **Spec**: [spec.md](spec.md)
+
+**Input**: Feature specification from `specs/007-unrecognized-files-staging/spec.md`
+
+---
+
+## Summary
+
+When automated cleaners and lookup plugins (books, audiobooks, music, video) cannot identify or clean incoming media in staging, media-cron automatically relocates these unrecognized items to a user-configurable review directory (`paths.review_dir`). Each item is safely isolated in its own timestamped subfolder alongside a detailed `manifest.json` metadata file recording failure reasons and container heuristics (`detected_category_hint`). Active torrent seeding files are protected by forcing non-destructive copy/hardlink transfers.
+
+Users can inspect and resolve pending items through an interactive guided terminal session (`media-cron review`) or direct non-interactive CLI commands (`media-cron review list / resolve / discard / purge`). Resolutions support immediate organization into destination libraries (`Organize Now`, with optional media server rescan for video and music), returning items to staging with `.media-cron-hint.json` sidecars (`Return to Staging`), discarding unwanted files, or skipping for later triage.
+
+---
+
+## Technical Context
+
+**Language/Version**: Python 3.11+ (tested on Python 3.13.2)  
+**Primary Dependencies**: Python standard library (`pathlib`, `json`, `os`, `shutil`, `re`, `datetime`, `uuid`), existing `typer` for CLI ergonomics, and `pytest`/`ruff` for testing and linting. Zero new runtime dependencies.  
+**Storage**: Local filesystem directories (`review_dir`, isolated subdirectories, `manifest.json`), YAML configuration, and environment variables.  
+**Testing**: `pytest` with 100% test-driven development (contract tests for `ReviewManagerProtocol`, unit tests, integration tests, end-to-end quickstart validation).  
+**Target Platform**: Linux server, container-native (Docker, Podman, Kubernetes CronJobs).  
+**Project Type**: Standalone Python library module and CLI media management utility.  
+**Performance Goals**:
+- Staging into review completed in <50ms per item on local filesystem.
+- Interactive CLI startup in <100ms.
+- 100% inotify-safe: atomic directory promotion via hidden staging folders (`.staging_*`).  
+**Constraints**:
+- Strict adherence to Constitution Principle II (TDD): tests authored and failing before domain implementation.
+- Stdlib only (zero new third-party packages).
+- Non-destructive by default: seeding torrents protected; indefinite retention by default.
+- 100% predictive `--dry-run` simulation mode.
+
+---
+
+## Constitution Check
+
+*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+
+- **Principle I: Library-First & CLI-Driven**: **PASS**. Domain logic is isolated in `media_cron/review/` (`manager.py`, `models.py`, `base.py`), decoupled from cron execution. Core functionality is exposed via dedicated CLI subcommands (`media-cron review` and `list / resolve / discard / purge`) supporting text and JSON formats.
+- **Principle II: Test-First & Contract Verification (NON-NEGOTIABLE)**: **PASS**. Contract tests authored for `ReviewManagerProtocol`; unit and integration tests written first before domain implementation.
+- **Principle III: Idempotency & Failure Resilience**: **PASS**. Hidden directory staging (`.staging_*`), atomic `os.replace` promotion, torrent seed protection, non-destructive default retention, and full dry-run simulation mode.
+- **Principle IV: Structured Observability & Diagnosability**: **PASS**. Deterministic exit codes, structured logging, batch telemetry in `BatchSummary.unrecognized_count` and `review_staged_count`, and machine-readable JSON outputs.
+- **Principle V: Container-Native & Environment Isolation**: **PASS**. Fully declarative configuration via YAML (`paths.review_dir`, `review.enabled`, `review.max_age_days`) and environment variables (`MEDIA_CRON_PATHS_REVIEW_DIR`, etc.) supporting volume mounts.
+
+---
+
+## Project Structure
+
+### Documentation (this feature)
+
+```text
+specs/007-unrecognized-files-staging/
+├── plan.md                                      # This implementation plan
+├── research.md                                  # Technical decisions, heuristics, storage layout
+├── data-model.md                                # Entities, enums, JSON schemas, telemetry models
+├── quickstart.md                                # 5 runnable end-to-end validation scenarios
+├── checklists/
+│   └── requirements.md                          # Specification quality checklist
+├── contracts/
+│   ├── review-manager-interface.md              # ReviewManagerProtocol specification
+│   ├── cli-interface.md                         # CLI subcommands, flags, and exit codes
+│   └── config-schema.md                         # YAML schema & environment variable bindings
+└── tasks.md                                     # Task breakdown generated by /speckit-tasks
+```
+
+### Source Code (repository root)
+
+```text
+media_cron/
+├── config.py                                    # PathsConfig.review_dir & ReviewConfig models
+├── models.py                                    # BatchSummary unrecognized/review_staged telemetry
+├── pipeline.py                                  # Unrecognized item detection & staging to review_dir
+├── cli.py                                       # Typer review subcommand app (interactive & direct)
+└── review/
+    ├── __init__.py                              # Review package exports
+    ├── base.py                                  # ReviewManagerProtocol definition
+    ├── models.py                                # ReviewStatus, ReviewAction, ReviewManifest, UserAnnotation
+    ├── heuristics.py                            # Category hint extraction heuristics (.mkv, .flac, etc.)
+    └── manager.py                               # ReviewManager implementation (stage, resolve, purge)
+
+tests/
+├── contract/
+│   └── test_review_manager_contract.py          # Contract verification for ReviewManagerProtocol
+├── unit/
+│   └── review/
+│       ├── test_review_models.py                # Manifest serialization, enum validation
+│       ├── test_review_heuristics.py            # Category hint detection heuristics
+│       ├── test_review_manager.py               # Staging, resolution, discard, and purge logic
+│       └── test_review_cli.py                   # Interactive TTY handling and direct CLI commands
+└── integration/
+    ├── test_unrecognized_staging.py             # Pipeline staging of unrecognized files & torrent safety
+    ├── test_review_resolution.py                # End-to-end resolution (organize now, reingest, rescan)
+    └── test_review_quickstart.py                # Validation of Scenarios 1-5 from quickstart.md
+```
+
+---
+
+## Complexity Tracking
+
+| Violation | Why Needed | Simpler Alternative Rejected Because |
+|---|---|---|
+| *None* | Feature strictly follows existing library/plugin architectures and constitution principles. | N/A |

@@ -37,6 +37,7 @@ class PathsConfig:
     staging_dir: Path = field(default_factory=lambda: Path.home() / ".media-cron" / "staging")
     destination_dir: Path | None = None
     seed_dir: Path | None = None
+    review_dir: Path | None = None
 
 
 @dataclass
@@ -218,6 +219,12 @@ class VideoConfig:
 
 
 @dataclass
+class ReviewConfig:
+    enabled: bool = True
+    max_age_days: int = 0
+
+
+@dataclass
 class MediaCronConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     general: GeneralConfig = field(default_factory=GeneralConfig)
@@ -230,6 +237,7 @@ class MediaCronConfig:
     books: BooksConfig = field(default_factory=BooksConfig)
     music: MusicConfig = field(default_factory=MusicConfig)
     video: VideoConfig = field(default_factory=lambda: VideoConfig(enabled=False))
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -266,6 +274,15 @@ class MediaCronConfig:
                     cfg.paths.destination_dir = Path(p["destination_dir"])
                 if "seed_dir" in p and p["seed_dir"]:
                     cfg.paths.seed_dir = Path(p["seed_dir"])
+                if "review_dir" in p and p["review_dir"]:
+                    cfg.paths.review_dir = Path(p["review_dir"])
+
+            if "review" in data and isinstance(data["review"], dict):
+                r = data["review"]
+                if "enabled" in r:
+                    cfg.review.enabled = bool(r["enabled"])
+                if "max_age_days" in r:
+                    cfg.review.max_age_days = int(r["max_age_days"])
 
             if "general" in data:
                 g = data["general"]
@@ -533,6 +550,18 @@ class MediaCronConfig:
         env_seed = os.getenv("MEDIA_CRON_SEED_DIR")
         if env_seed:
             cfg.paths.seed_dir = Path(env_seed)
+
+        env_review = os.getenv("MEDIA_CRON_PATHS_REVIEW_DIR") or os.getenv("MEDIA_CRON_REVIEW_DIR")
+        if env_review:
+            cfg.paths.review_dir = Path(env_review)
+
+        env_review_enabled = os.getenv("MEDIA_CRON_REVIEW_ENABLED")
+        if env_review_enabled is not None:
+            cfg.review.enabled = env_review_enabled.lower() in ("true", "1", "yes")
+
+        env_review_max_age = os.getenv("MEDIA_CRON_REVIEW_MAX_AGE_DAYS")
+        if env_review_max_age is not None:
+            cfg.review.max_age_days = int(env_review_max_age)
 
         env_mode = os.getenv("MEDIA_CRON_MODE")
         if env_mode:

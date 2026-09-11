@@ -37,6 +37,7 @@ class OperationType(StrEnum):
     TORRENT_STAGE_COPY = "TORRENT_STAGE_COPY"
     TORRENT_RELOCATE = "TORRENT_RELOCATE"
     TORRENT_TAG = "TORRENT_TAG"
+    REVIEW_STAGE = "REVIEW_STAGE"
 
 
 class OperationStatus(StrEnum):
@@ -126,6 +127,8 @@ class BatchSummary:
     books_summary: dict | None = None
     music_summary: dict | None = None
     video_summary: dict | None = None
+    unrecognized_count: int = 0
+    review_staged_count: int = 0
 
     def to_dict(self) -> dict:
         data = {
@@ -139,6 +142,8 @@ class BatchSummary:
             "junk_purged_count": self.junk_purged_count,
             "skipped_count": self.skipped_count,
             "error_count": self.error_count,
+            "unrecognized_count": self.unrecognized_count,
+            "review_staged_count": self.review_staged_count,
             "exit_code": self.exit_code,
             "operations": [
                 {
