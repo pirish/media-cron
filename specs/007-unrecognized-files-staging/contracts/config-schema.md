@@ -1,6 +1,6 @@
 # Contract: Configuration Schema
 
-**Scope**: Configuration definitions and environment bindings for unrecognized media staging and manual review.  
+**Scope**: Configuration definitions and environment bindings for unrecognized media staging and manual review.
 
 ---
 

@@ -1,8 +1,8 @@
 # Contract: Music Subsystem Configuration Schema
 
-**Feature**: `005-music-organization`  
-**Date**: 2026-09-09  
-**Status**: Complete  
+**Feature**: `005-music-organization`
+**Date**: 2026-09-09
+**Status**: Complete
 
 ---
 
@@ -17,19 +17,19 @@ music:
   spool_dir: "/mnt/storage/beets_drop" # Target drop folder for external managers
   post_ingest_command: "beet import -q \"{release_path}\"" # Optional shell hook executed post-drop
   post_command_timeout_seconds: 120    # Timeout for post-ingest command execution
-  
+
   # Organization settings (direct mode)
   library_dir: "Music"                 # Subdirectory under destination_dir
   path_template: "{album_artist}/{album} ({year})/{track_padded} - {title}.{ext}"
   compilation_artist: "Various Artists"# Fallback folder for compilations
-  
+
   # External Catalog Lookup (direct/hybrid mode)
   enable_external_lookup: false        # Enable online queries (MusicBrainz/Discogs)
   provider: "musicbrainz"              # "musicbrainz" | "discogs"
   discogs_token: null                  # Optional personal access token for Discogs
   confidence_threshold: 0.85           # Score required to override embedded tags
   cache_ttl_days: 30                   # Cache expiration for catalog responses
-  
+
   # Filesystem behavior
   hardlink_with_copy_fallback: true    # Use hardlinks when on same filesystem; fall back to copy
 ```

@@ -84,21 +84,21 @@ stateDiagram-v2
     IngestAudio --> DetectCategory: Check .m4b, path hints, tags
     DetectCategory --> GroupBundle: Category == AUDIO_BOOK
     DetectCategory --> PassToMusic: Category == AUDIO_MUSIC
-    
+
     GroupBundle --> CheckLocalCache: Extract local seed (tags + directory)
     CheckLocalCache --> ApplyMetadata: Cache Hit & Confidence >= 0.85
     CheckLocalCache --> QueryExternalProviders: Cache Miss or Expired
-    
+
     QueryExternalProviders --> EvaluateConfidence: Provider returned candidate(s)
     QueryExternalProviders --> FallbackLocal: All providers failed or offline
-    
+
     EvaluateConfidence --> ApplyExternalOverride: Confidence >= 0.85
     EvaluateConfidence --> ApplyLocalPreservation: Confidence < 0.85
-    
+
     ApplyExternalOverride --> CacheResult: Save match to local cache
     ApplyLocalPreservation --> CacheResult: Save local tags + non-conflicting enrichment
     FallbackLocal --> EnrichMediaAsset: Log fallback warning
-    
+
     CacheResult --> EnrichMediaAsset
     EnrichMediaAsset --> [*]
 ```

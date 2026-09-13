@@ -1,7 +1,7 @@
 # Quickstart Validation Guide: Unrecognized Media Staging & Manual Review
 
-**Feature Branch**: `007-unrecognized-files-staging`  
-**Date**: 2026-09-09  
+**Feature Branch**: `007-unrecognized-files-staging`
+**Date**: 2026-09-09
 
 This guide provides 5 runnable end-to-end scenarios demonstrating the complete lifecycle of unrecognized media staging, metadata manifest generation, interactive triage, non-interactive resolution, and media server notifications.
 

@@ -16,16 +16,16 @@ Users can inspect and resolve pending items through an interactive guided termin
 
 ## Technical Context
 
-**Language/Version**: Python 3.11+ (tested on Python 3.13.2)  
-**Primary Dependencies**: Python standard library (`pathlib`, `json`, `os`, `shutil`, `re`, `datetime`, `uuid`), existing `typer` for CLI ergonomics, and `pytest`/`ruff` for testing and linting. Zero new runtime dependencies.  
-**Storage**: Local filesystem directories (`review_dir`, isolated subdirectories, `manifest.json`), YAML configuration, and environment variables.  
-**Testing**: `pytest` with 100% test-driven development (contract tests for `ReviewManagerProtocol`, unit tests, integration tests, end-to-end quickstart validation).  
-**Target Platform**: Linux server, container-native (Docker, Podman, Kubernetes CronJobs).  
-**Project Type**: Standalone Python library module and CLI media management utility.  
+**Language/Version**: Python 3.11+ (tested on Python 3.13.2)
+**Primary Dependencies**: Python standard library (`pathlib`, `json`, `os`, `shutil`, `re`, `datetime`, `uuid`), existing `typer` for CLI ergonomics, and `pytest`/`ruff` for testing and linting. Zero new runtime dependencies.
+**Storage**: Local filesystem directories (`review_dir`, isolated subdirectories, `manifest.json`), YAML configuration, and environment variables.
+**Testing**: `pytest` with 100% test-driven development (contract tests for `ReviewManagerProtocol`, unit tests, integration tests, end-to-end quickstart validation).
+**Target Platform**: Linux server, container-native (Docker, Podman, Kubernetes CronJobs).
+**Project Type**: Standalone Python library module and CLI media management utility.
 **Performance Goals**:
 - Staging into review completed in <50ms per item on local filesystem.
 - Interactive CLI startup in <100ms.
-- 100% inotify-safe: atomic directory promotion via hidden staging folders (`.staging_*`).  
+- 100% inotify-safe: atomic directory promotion via hidden staging folders (`.staging_*`).
 **Constraints**:
 - Strict adherence to Constitution Principle II (TDD): tests authored and failing before domain implementation.
 - Stdlib only (zero new third-party packages).

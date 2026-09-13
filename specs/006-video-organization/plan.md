@@ -14,16 +14,16 @@ The video subsystem provides automated drop-folder spooling for downstream libra
 
 ## Technical Context
 
-**Language/Version**: Python 3.11+ (verified on Python 3.13.2)  
-**Primary Dependencies**: Python standard library (`urllib.request`, `pathlib`, `json`, `os`, `shutil`, `re`, `subprocess`), existing `typer` for CLI ergonomics, and `pytest`/`ruff` for test and quality verification. Zero new runtime dependencies.  
-**Storage**: Local filesystem, YAML/environment configuration, optional persistent cache if needed.  
-**Testing**: `pytest` with 100% test-driven development (contract tests, unit tests, integration tests, end-to-end quickstart).  
-**Target Platform**: Linux server, container-native (Docker, Podman, Kubernetes CronJobs).  
-**Project Type**: CLI media management utility and standalone Python library module.  
+**Language/Version**: Python 3.11+ (verified on Python 3.13.2)
+**Primary Dependencies**: Python standard library (`urllib.request`, `pathlib`, `json`, `os`, `shutil`, `re`, `subprocess`), existing `typer` for CLI ergonomics, and `pytest`/`ruff` for test and quality verification. Zero new runtime dependencies.
+**Storage**: Local filesystem, YAML/environment configuration, optional persistent cache if needed.
+**Testing**: `pytest` with 100% test-driven development (contract tests, unit tests, integration tests, end-to-end quickstart).
+**Target Platform**: Linux server, container-native (Docker, Podman, Kubernetes CronJobs).
+**Project Type**: CLI media management utility and standalone Python library module.
 **Performance Goals**:
 - Atomic directory promotion under 50ms on POSIX filesystems.
 - Media server rescan notification completed or timed out within 5.0 seconds maximum.
-- 100% inotify-safe: zero partial or in-flight files exposed to external watchers.  
+- 100% inotify-safe: zero partial or in-flight files exposed to external watchers.
 **Constraints**:
 - Strict adherence to Constitution Principle II (TDD): tests authored and failing before implementation.
 - Standard-library-only HTTP clients (no `requests`, no server-specific SDKs).

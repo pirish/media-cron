@@ -1,8 +1,8 @@
 # Feature Specification: Video Organization, Drop-Folder Spooling, and Media Server Library Rescan
 
-**Feature Branch**: `006-video-organization`  
-**Created**: 2026-09-09  
-**Status**: Ready  
+**Feature Branch**: `006-video-organization`
+**Created**: 2026-09-09
+**Status**: Ready
 **Input**: User description: "video: Automatic identification should be supported but not required. Dumping media to a folder to be consumed by a library manager, such as *arr stack, that handles identification and organization is also a valid work flow. If we are handling identification and organization we should also have a configurable option to trigger a media player (jellyfin, emby, plex) to rescan the library."
 
 ---

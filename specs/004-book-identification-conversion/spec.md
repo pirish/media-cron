@@ -146,5 +146,3 @@ An operator running automated cron jobs or inspecting changes locally needs guar
 - **Conversion tooling**: Format conversion employs a pluggable architecture utilizing Calibre `ebook-convert` as the primary high-fidelity engine and falling back to pure-Python conversion libraries when external binaries are absent.
 - **Local-first fallback**: System remains fully operational without internet connectivity, utilizing local file tags and filename heuristics.
 - **Persistent caching**: Metadata and classification query results are stored in the local cache directory with a 30-day default TTL.
-
-

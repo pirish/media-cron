@@ -1,9 +1,9 @@
 # Tasks: Music Library Organization and Drop-Folder Ingestion
 
-**Feature**: `005-music-organization`  
-**Date**: 2026-09-09  
-**Specification**: [spec.md](spec.md)  
-**Implementation Plan**: [plan.md](plan.md)  
+**Feature**: `005-music-organization`
+**Date**: 2026-09-09
+**Specification**: [spec.md](spec.md)
+**Implementation Plan**: [plan.md](plan.md)
 
 ---
 

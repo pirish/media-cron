@@ -1,8 +1,8 @@
 # Tasks: Unrecognized Media Staging and Interactive Manual Review
 
-**Feature**: `007-unrecognized-files-staging`  
-**Input**: Design artifacts from `specs/007-unrecognized-files-staging/` (`spec.md`, `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`)  
-**Status**: Ready for Implementation  
+**Feature**: `007-unrecognized-files-staging`
+**Input**: Design artifacts from `specs/007-unrecognized-files-staging/` (`spec.md`, `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`)
+**Status**: Ready for Implementation
 
 ---
 

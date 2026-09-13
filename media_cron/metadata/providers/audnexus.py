@@ -67,7 +67,7 @@ class AudnexusProvider(MetadataProviderProtocol):
         except TimeoutError as e:
             raise ProviderTimeoutError(f"Audnexus request timed out after {timeout}s") from e
         except urllib.error.URLError as e:
-            if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            if isinstance(e.reason, socket.timeout | TimeoutError):
                 raise ProviderTimeoutError(f"Audnexus request timed out after {timeout}s") from e
             raise ProviderUnavailableError(f"Audnexus connection failed: {e.reason}") from e
         except Exception as e:

@@ -1,8 +1,8 @@
 # Contract: Music Metadata Provider Interface
 
-**Feature**: `005-music-organization`  
-**Date**: 2026-09-09  
-**Status**: Complete  
+**Feature**: `005-music-organization`
+**Date**: 2026-09-09
+**Status**: Complete
 
 ---
 

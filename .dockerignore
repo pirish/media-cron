@@ -1,0 +1,42 @@
+# Git and GitHub
+.git/
+.gitignore
+.github/
+
+# Virtual Environments & Caches
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Distribution & Build
+dist/
+build/
+*.egg-info/
+
+# Tests and Specifications
+tests/
+specs/
+.agents/
+.specify/
+
+# Helm Charts
+charts/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# Local media runtime & caches
+.media-cron-cache/
+.media-cron.lock

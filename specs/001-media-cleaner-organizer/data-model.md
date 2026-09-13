@@ -193,7 +193,7 @@ stateDiagram-v2
 
     Planned --> Organized: Execute Hardlink/Move
     Upgraded --> Organized: Unlink Predecessor & Link New Asset
-    
+
     Organized --> Seeded: Move/Link Source to Seed Dir (Optional)
     Seeded --> Cleaned: Prune Junk Files & Empty Dirs
     Cleaned --> [*]

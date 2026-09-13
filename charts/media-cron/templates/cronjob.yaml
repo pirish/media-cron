@@ -1,0 +1,99 @@
+{{- if eq .Values.workloadType "CronJob" -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "media-cron.fullname" . }}
+  labels:
+    {{- include "media-cron.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  concurrencyPolicy: {{ .Values.cronjob.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.cronjob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cronjob.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ .Values.cronjob.startingDeadlineSeconds }}
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          labels:
+            {{- include "media-cron.selectorLabels" . | nindent 12 }}
+        spec:
+          restartPolicy: {{ .Values.cronjob.restartPolicy }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "media-cron.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: {{ .Chart.Name }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- if .Values.cronjob.command }}
+              command:
+                {{- toYaml .Values.cronjob.command | nindent 16 }}
+              {{- end }}
+              {{- if .Values.cronjob.args }}
+              args:
+                {{- toYaml .Values.cronjob.args | nindent 16 }}
+              {{- end }}
+              env:
+                {{- if .Values.env }}
+                {{- toYaml .Values.env | nindent 16 }}
+                {{- end }}
+              {{- if .Values.envFromSecret }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.envFromSecret }}
+              {{- end }}
+              volumeMounts:
+                {{- if .Values.persistence.data.enabled }}
+                - name: data
+                  mountPath: {{ .Values.persistence.data.mountPath }}
+                {{- end }}
+                {{- if .Values.persistence.config.enabled }}
+                - name: config
+                  mountPath: {{ .Values.persistence.config.mountPath }}
+                {{- end }}
+                {{- if .Values.persistence.cache.enabled }}
+                - name: cache
+                  mountPath: {{ .Values.persistence.cache.mountPath }}
+                {{- end }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+          volumes:
+            {{- if .Values.persistence.data.enabled }}
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ .Values.persistence.data.existingClaim | default (printf "%s-data" (include "media-cron.fullname" .)) }}
+            {{- end }}
+            {{- if .Values.persistence.config.enabled }}
+            - name: config
+              persistentVolumeClaim:
+                claimName: {{ .Values.persistence.config.existingClaim | default (printf "%s-config" (include "media-cron.fullname" .)) }}
+            {{- end }}
+            {{- if .Values.persistence.cache.enabled }}
+            - name: cache
+              persistentVolumeClaim:
+                claimName: {{ .Values.persistence.cache.existingClaim | default (printf "%s-cache" (include "media-cron.fullname" .)) }}
+            {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

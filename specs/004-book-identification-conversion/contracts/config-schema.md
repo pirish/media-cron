@@ -1,8 +1,8 @@
 # Contract: Configuration Schema & Environment Variables
 
-**Feature**: Book Identification, UDC Classification, and EPUB Conversion  
-**Branch**: `004-book-identification-conversion`  
-**Date**: 2026-09-09  
+**Feature**: Book Identification, UDC Classification, and EPUB Conversion
+**Branch**: `004-book-identification-conversion`
+**Date**: 2026-09-09
 
 ## 1. YAML Configuration Schema
 
@@ -13,7 +13,7 @@ books:
   enabled: true
   enable_external_lookup: true
   confidence_threshold: 0.85
-  
+
   udc_lookup:
     enabled: false                   # Opt-in by default
     min_confidence: 0.70

@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test-gate:
+    name: Pre-Release Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run Ruff Lint
+        run: ruff check .
+
+      - name: Run Ruff Format Check
+        run: ruff format --check .
+
+      - name: Run Test Suite
+        run: pytest
+
+  publish-container:
+    name: Build & Publish Multi-Arch Container Image
+    needs: test-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push multi-architecture image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish-helm:
+    name: Package & Publish Helm Chart (OCI)
+    needs: test-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package Helm chart
+        run: |
+          RAW_TAG="${{ github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          mkdir -p dist/charts
+          helm package charts/media-cron --version "${VERSION}" --app-version "${VERSION}" -d dist/charts
+          echo "PACKAGED_VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Log in to GHCR Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push OCI Helm Chart
+        run: |
+          CHART_PACKAGE="dist/charts/media-cron-${PACKAGED_VERSION}.tgz"
+          # Convert repository owner to lowercase for registry URL compatibility
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm push "${CHART_PACKAGE}" "oci://ghcr.io/${OWNER_LOWER}/charts"
+
+  publish-python:
+    name: Build & Upload Python Distribution Packages
+    needs: test-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packaging tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Validate distribution archives
+        run: twine check --strict dist/*
+
+      - name: Upload packages to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" dist/*.tar.gz dist/*.whl --clobber

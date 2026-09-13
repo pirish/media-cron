@@ -1,0 +1,94 @@
+# Default values for media-cron.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Workload execution mode: "CronJob" (scheduled batch) or "Deployment" (continuous daemon)
+workloadType: CronJob
+
+image:
+  repository: ghcr.io/pirish/media-cron
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Configuration for workloadType == CronJob
+cronjob:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  restartPolicy: OnFailure
+  startingDeadlineSeconds: 600
+  command: ["media-cron"]
+  args: ["organize"]
+
+# Configuration for workloadType == Deployment
+deployment:
+  replicaCount: 1
+  strategy:
+    type: Recreate
+  command: ["media-cron"]
+  args: ["--help"]
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+env: []
+# - name: MEDIA_CRON_DRY_RUN
+#   value: "false"
+
+envFromSecret: ""
+
+persistence:
+  data:
+    enabled: true
+    existingClaim: ""
+    mountPath: /data
+    accessMode: ReadWriteMany
+    size: 500Gi
+  config:
+    enabled: false
+    existingClaim: ""
+    mountPath: /config
+  cache:
+    enabled: true
+    existingClaim: ""
+    mountPath: /cache
+    accessMode: ReadWriteOnce
+    size: 10Gi
+
+configmap:
+  enabled: false
+  data: {}
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

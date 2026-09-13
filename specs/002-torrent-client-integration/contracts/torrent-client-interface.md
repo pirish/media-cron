@@ -30,7 +30,7 @@ class TorrentClientProtocol(Protocol):
     def test_connection(self) -> bool:
         """
         Validates connectivity and authentication to the client.
-        
+
         Returns:
             True if connection and credentials are valid, False otherwise.
         """

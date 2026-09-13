@@ -1,8 +1,8 @@
 # Research: Video Organization, Drop-Folder Spooling, and Media Server Rescan
 
-**Feature**: `006-video-organization`  
-**Date**: 2026-09-09  
-**Status**: Complete  
+**Feature**: `006-video-organization`
+**Date**: 2026-09-09
+**Status**: Complete
 
 ---
 

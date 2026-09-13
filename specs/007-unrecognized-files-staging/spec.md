@@ -1,8 +1,8 @@
 # Feature Specification: Unrecognized Media Staging and Interactive Manual Review
 
-**Feature Branch**: `007-unrecognized-files-staging`  
-**Created**: 2026-09-09  
-**Status**: Ready  
+**Feature Branch**: `007-unrecognized-files-staging`
+**Created**: 2026-09-09
+**Status**: Ready
 **Input**: User description: "unrecognized files:  files that can not be identified or cleaned automatically should be staged in a user configurable directory for manual review.  Users should be able to review and add context via interactive cli."
 
 ---

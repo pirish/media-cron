@@ -1,8 +1,8 @@
 # Technical Research: Music Library Organization and Drop-Folder Ingestion
 
-**Feature**: `005-music-organization`  
-**Date**: 2026-09-09  
-**Status**: Completed  
+**Feature**: `005-music-organization`
+**Date**: 2026-09-09
+**Status**: Completed
 
 ---
 

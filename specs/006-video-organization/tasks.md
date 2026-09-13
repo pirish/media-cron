@@ -1,9 +1,9 @@
 # Tasks: Video Organization, Drop-Folder Spooling, and Media Server Rescan
 
-**Feature**: `006-video-organization`  
-**Date**: 2026-09-09  
-**Specification**: [spec.md](spec.md)  
-**Implementation Plan**: [plan.md](plan.md)  
+**Feature**: `006-video-organization`
+**Date**: 2026-09-09
+**Specification**: [spec.md](spec.md)
+**Implementation Plan**: [plan.md](plan.md)
 
 ---
 

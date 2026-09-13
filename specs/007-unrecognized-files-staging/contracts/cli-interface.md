@@ -1,7 +1,7 @@
 # Contract: CLI Interface Specification
 
-**Subcommand**: `media-cron review`  
-**Module**: `media_cron.cli`  
+**Subcommand**: `media-cron review`
+**Module**: `media_cron.cli`
 
 ---
 

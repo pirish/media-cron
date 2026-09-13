@@ -1,7 +1,7 @@
 # Specification Quality Checklist: 007-unrecognized-files-staging
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-09-09  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-09-09
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

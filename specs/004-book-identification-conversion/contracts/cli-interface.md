@@ -1,8 +1,8 @@
 # Contract: CLI Interface & Telemetry Schemas
 
-**Feature**: Book Identification, UDC Classification, and EPUB Conversion  
-**Branch**: `004-book-identification-conversion`  
-**Date**: 2026-09-09  
+**Feature**: Book Identification, UDC Classification, and EPUB Conversion
+**Branch**: `004-book-identification-conversion`
+**Date**: 2026-09-09
 
 ## 1. CLI Commands & Options
 

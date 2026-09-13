@@ -132,8 +132,61 @@ If a prior job is still running, the non-blocking lockfile will cause subsequent
 
 ---
 
-## Running Tests
+## Development & Quality Gates
+
+### Pre-Commit Hooks
+
+Media-Cron uses [pre-commit](https://pre-commit.com/) to automatically enforce file hygiene, Ruff linting/formatting, and the complete test suite before any commit is finalized:
 
 ```bash
+# Install git pre-commit hooks
+pre-commit install
+
+# Run all hooks manually across the entire repository
+pre-commit run --all-files
+```
+
+### Running Tests & Linters Manually
+
+```bash
+# Run full automated test suite
 pytest -v
+
+# Run lint checks
+ruff check .
+
+# Run code formatter check
+ruff format --check .
+```
+
+---
+
+## Container & Kubernetes Deployment
+
+### Docker / Podman
+
+Media-Cron publishes non-root multi-architecture container images (`linux/amd64` and `linux/arm64`) to GitHub Container Registry:
+
+```bash
+docker run --rm \
+  -v /downloads/completed:/data/completed \
+  -v /data/staging:/data/staging \
+  -v /media/library:/data/library \
+  -v ~/.config/media-cron/config.yaml:/config/config.yaml:ro \
+  ghcr.io/pirish/media-cron:latest organize
+```
+
+### Kubernetes Helm Chart
+
+Deploy Media-Cron to Kubernetes clusters using the official OCI Helm chart:
+
+```bash
+# Deploy as a scheduled batch CronJob (default)
+helm install media-cron oci://ghcr.io/pirish/charts/media-cron \
+  --set persistence.data.existingClaim=media-storage-pvc \
+  --set cronjob.schedule="0 2 * * *"
+
+# Or deploy as a continuous background daemon
+helm install media-cron oci://ghcr.io/pirish/charts/media-cron \
+  --set workloadType=Deployment
 ```

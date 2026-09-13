@@ -1,8 +1,8 @@
 # Contract: Media Server Client Interface (Jellyfin, Emby, Plex)
 
-**Feature**: `006-video-organization`  
-**Date**: 2026-09-09  
-**Status**: Complete  
+**Feature**: `006-video-organization`
+**Date**: 2026-09-09
+**Status**: Complete
 
 ---
 

@@ -1,7 +1,7 @@
 # Research & Technical Decisions: Unrecognized Media Staging and Interactive Manual Review
 
-**Feature Branch**: `007-unrecognized-files-staging`  
-**Date**: 2026-09-09  
+**Feature Branch**: `007-unrecognized-files-staging`
+**Date**: 2026-09-09
 
 ---
 

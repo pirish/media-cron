@@ -65,7 +65,7 @@ class OpenLibraryProvider(MetadataProviderProtocol):
         except TimeoutError as e:
             raise ProviderTimeoutError(f"Open Library request timed out after {timeout}s") from e
         except urllib.error.URLError as e:
-            if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            if isinstance(e.reason, socket.timeout | TimeoutError):
                 raise ProviderTimeoutError(
                     f"Open Library request timed out after {timeout}s"
                 ) from e

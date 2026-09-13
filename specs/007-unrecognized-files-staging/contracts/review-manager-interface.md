@@ -1,8 +1,8 @@
 # Contract: ReviewManager Interface
 
-**Protocol**: `ReviewManagerProtocol`  
-**Module**: `media_cron.review.base`  
-**Implementation**: `media_cron.review.manager.ReviewManager`  
+**Protocol**: `ReviewManagerProtocol`
+**Module**: `media_cron.review.base`
+**Implementation**: `media_cron.review.manager.ReviewManager`
 
 ---
 

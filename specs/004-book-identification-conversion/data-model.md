@@ -1,8 +1,8 @@
 # Data Model: Book Identification, UDC Classification, and EPUB Conversion
 
-**Feature**: Book Identification, UDC Classification, and EPUB Conversion  
-**Branch**: `004-book-identification-conversion`  
-**Date**: 2026-09-09  
+**Feature**: Book Identification, UDC Classification, and EPUB Conversion
+**Branch**: `004-book-identification-conversion`
+**Date**: 2026-09-09
 
 ## Overview
 

@@ -1,8 +1,8 @@
 # Quickstart Validation Guide: Music Library Organization and Drop-Folder Ingestion
 
-**Feature**: `005-music-organization`  
-**Date**: 2026-09-09  
-**Status**: Ready  
+**Feature**: `005-music-organization`
+**Date**: 2026-09-09
+**Status**: Ready
 
 This document outlines five validation scenarios proving that music drop-folder spooling, post-ingest command hooks, embedded tag extraction, and optional catalog queries work reliably end-to-end.
 

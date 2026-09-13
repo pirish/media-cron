@@ -1,8 +1,8 @@
 # Quickstart Validation Guide: Video Organization, Drop-Folder Spooling, and Media Server Rescan
 
-**Feature**: `006-video-organization`  
-**Date**: 2026-09-09  
-**Status**: Ready  
+**Feature**: `006-video-organization`
+**Date**: 2026-09-09
+**Status**: Ready
 
 This document outlines five validation scenarios proving that video drop-folder spooling, post-ingest command hooks, direct library organization, media server rescan triggers, and simulation modes function reliably end-to-end.
 
