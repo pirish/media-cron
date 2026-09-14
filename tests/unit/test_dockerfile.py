@@ -14,9 +14,8 @@ def test_dockerignore_rules():
 
     expected_patterns = [".git", ".venv", "tests", "specs"]
     for pattern in expected_patterns:
-        assert any(
-            pattern in line for line in content.splitlines()
-        ), f"Pattern '{pattern}' should be in .dockerignore"
+        pattern_found = any(pattern in line for line in content.splitlines())
+        assert pattern_found, f"Pattern '{pattern}' should be in .dockerignore"
 
 
 def test_dockerfile_multi_stage_structure():
@@ -25,12 +24,9 @@ def test_dockerfile_multi_stage_structure():
     lines = DOCKERFILE.read_text(encoding="utf-8").splitlines()
 
     from_lines = [line for line in lines if line.strip().upper().startswith("FROM")]
-    assert (
-        len(from_lines) >= 2
-    ), "Dockerfile must define a multi-stage build (at least 2 FROM instructions)"
-    assert any(
-        "python:3.11-slim" in line for line in from_lines
-    ), "Dockerfile should use python:3.11-slim base"
+    assert len(from_lines) >= 2, "Dockerfile must define a multi-stage build"
+    has_base = any("python:3.11-slim" in line for line in from_lines)
+    assert has_base, "Dockerfile should use python:3.11-slim base"
 
 
 def test_dockerfile_non_root_security_and_user():

@@ -19,9 +19,8 @@ def test_package_build_and_twine_validation(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert (
-        build_res.returncode == 0
-    ), f"Package build failed:\n{build_res.stderr}\n{build_res.stdout}"
+    build_err = f"Package build failed:\n{build_res.stderr}\n{build_res.stdout}"
+    assert build_res.returncode == 0, build_err
 
     # Step 2: Confirm artifacts exist
     sdist_files = list(out_dir.glob("*.tar.gz"))
@@ -38,7 +37,6 @@ def test_package_build_and_twine_validation(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert (
-        twine_res.returncode == 0
-    ), f"Twine validation failed:\n{twine_res.stderr}\n{twine_res.stdout}"
+    twine_err = f"Twine validation failed:\n{twine_res.stderr}\n{twine_res.stdout}"
+    assert twine_res.returncode == 0, twine_err
     assert "PASSED" in twine_res.stdout
