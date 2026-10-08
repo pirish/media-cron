@@ -120,6 +120,14 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Rescan Errors:         {vsum.get('rescan_errors', 0)}",
             ]
         )
+    if getattr(summary, "routing_summary", None):
+        lines.append("--- Media Routing Telemetry ---")
+        for media_name, rsum in summary.routing_summary.items():
+            rdata = rsum.to_dict() if hasattr(rsum, "to_dict") else rsum
+            dest_info = f"{rdata.get('destination_path')} ({rdata.get('destination_type')})"
+            lines.append(
+                f"[{media_name.upper()}] Sources: {rdata.get('source_count')}, Dest: {dest_info}, Mode: {rdata.get('transfer_mode')}, Processed: {rdata.get('processed_count')}, Spooled: {rdata.get('spooled_count')}, Review: {rdata.get('review_staged_count')}"
+            )
     lines.append("--- Operations ---")
     for op in summary.operations:
         status_tag = f"[{op.status.value}]"
@@ -443,10 +451,22 @@ def run_command(
         cfg.torrent_clients[cfg.active_torrent_client].seeding.mode = seeding_mode
 
     # 3. Validate paths
+    has_route_dest = any(
+        getattr(r, "destination", None) is not None
+        and getattr(r.destination, "path", None) is not None
+        for r in [
+            getattr(getattr(cfg, "music", None), "route", None),
+            getattr(getattr(cfg, "audiobook", None), "route", None),
+            getattr(getattr(cfg, "books", None), "route", None),
+            getattr(getattr(cfg, "video", None), "movies_route", None),
+            getattr(getattr(cfg, "video", None), "tv_route", None),
+        ]
+    )
     if (
         not cfg.paths.destination_dir
         and not (cfg.music.enabled and cfg.music.spool_dir)
         and not (cfg.video.enabled and cfg.video.spool_dir)
+        and not has_route_dest
     ):
         msg = "Error: --destination must be specified via CLI or config file."
         if format.lower() == "json":
@@ -455,7 +475,17 @@ def run_command(
             typer.echo(msg, err=True)
         raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
-    if not cfg.active_torrent_client and not cfg.paths.source_dir:
+    has_route_source = any(
+        bool(getattr(r, "sources", None))
+        for r in [
+            getattr(getattr(cfg, "music", None), "route", None),
+            getattr(getattr(cfg, "audiobook", None), "route", None),
+            getattr(getattr(cfg, "books", None), "route", None),
+            getattr(getattr(cfg, "video", None), "movies_route", None),
+            getattr(getattr(cfg, "video", None), "tv_route", None),
+        ]
+    )
+    if not cfg.active_torrent_client and not cfg.paths.source_dir and not has_route_source:
         msg = "Error: Either --source or --torrent-client must be specified."
         if format.lower() == "json":
             typer.echo(json.dumps({"exit_code": EXIT_CONFIG_ERROR, "errors": [msg]}))
@@ -1872,6 +1902,161 @@ def review_purge(
 
 
 app.add_typer(review_app, name="review")
+
+
+routes_app = typer.Typer(name="routes", help="Media routing inspection and validation commands")
+
+
+@routes_app.command("list")
+def routes_list(
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: 'text' or 'json'"),
+    json_output: bool = typer.Option(False, "--json", help="Output in JSON format"),
+) -> None:
+    from media_cron.config import MediaCronConfig
+    from media_cron.routing.resolver import RouteResolver
+
+    try:
+        cfg = MediaCronConfig.load(config_path=config)
+    except Exception as e:
+        typer.echo(f"Error loading configuration: {e}", err=True)
+        raise typer.Exit(code=2) from e
+
+    resolver = RouteResolver()
+    resolved = resolver.resolve_all_routes(cfg)
+
+    use_json = json_output or format.lower() == "json"
+
+    if use_json:
+        data = {}
+        for m_type, route in resolved.items():
+            sources_list = []
+            for s in route.source_endpoints:
+                s_dict = {"type": s.type.value}
+                if s.path:
+                    s_dict["path"] = str(s.path)
+                if s.client_profile:
+                    s_dict["client_profile"] = s.client_profile
+                if s.category:
+                    s_dict["category"] = s.category
+                if s.tag:
+                    s_dict["tag"] = s.tag
+                sources_list.append(s_dict)
+
+            data[m_type.value] = {
+                "media_type": m_type.value,
+                "transfer_mode": route.transfer_mode.value,
+                "destination_type": route.destination_endpoint.type.value,
+                "destination_path": str(route.destination_endpoint.path)
+                if route.destination_endpoint.path
+                else None,
+                "sources": sources_list,
+                "is_healthy": route.is_healthy,
+            }
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # Human-readable table
+    lines = [
+        "Resolved Media Routing Configuration:",
+        "=" * 80,
+        f"{'Media Type':<12} {'Transfer Mode':<14} {'Destination Type':<17} {'Destination Path':<25} {'Sources'}",
+        "-" * 80,
+    ]
+    for m_type, route in resolved.items():
+        dest_path_str = (
+            str(route.destination_endpoint.path) if route.destination_endpoint.path else "None"
+        )
+        source_descs = []
+        for s in route.source_endpoints:
+            if s.type.value == "directory":
+                source_descs.append(f"dir: {s.path}")
+            else:
+                cat_tag = (
+                    f"cat={s.category}"
+                    if s.category
+                    else (f"tag={s.tag}" if s.tag else s.client_profile or "client")
+                )
+                source_descs.append(f"torrent: {cat_tag}")
+        src_summary = (
+            f"{len(route.source_endpoints)} source(s): [{', '.join(source_descs)}]"
+            if source_descs
+            else "0 sources"
+        )
+        lines.append(
+            f"{m_type.value:<12} {route.transfer_mode.value:<14} {route.destination_endpoint.type.value:<17} {dest_path_str:<25} {src_summary}"
+        )
+    lines.append("=" * 80)
+    typer.echo("\n".join(lines))
+
+
+@routes_app.command("validate")
+def routes_validate(
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+    format: str = typer.Option("text", "--format", "-f", help="Output format: 'text' or 'json'"),
+    json_output: bool = typer.Option(False, "--json", help="Output in JSON format"),
+) -> None:
+    """Verifies mount point safety and accessibility of all configured source and destination directories."""
+    from media_cron.config import MediaCronConfig
+    from media_cron.routing.resolver import RouteResolver
+
+    try:
+        cfg = MediaCronConfig.load(config_path=config)
+    except Exception as e:
+        typer.echo(f"Error loading configuration: {e}", err=True)
+        raise typer.Exit(code=2) from e
+
+    resolver = RouteResolver()
+    resolved = resolver.resolve_all_routes(cfg)
+
+    all_valid = True
+    validation_results = {}
+
+    for m_type, route in resolved.items():
+        is_safe = resolver.validate_mount_safety(route)
+        dest_path = route.destination_endpoint.path
+        dest_exists = dest_path.exists() if dest_path else False
+
+        errors = []
+        if dest_path and not dest_exists:
+            errors.append(f"Destination root missing or unmounted: {dest_path}")
+            all_valid = False
+
+        validation_results[m_type.value] = {
+            "valid": is_safe and (dest_exists or dest_path is None),
+            "destination_path": str(dest_path) if dest_path else None,
+            "errors": errors,
+        }
+
+    use_json = json_output or format.lower() == "json"
+
+    if use_json:
+        output_data = {
+            "valid": all_valid,
+            "routes": validation_results,
+        }
+        typer.echo(json.dumps(output_data, indent=2))
+    else:
+        if all_valid:
+            typer.echo("All destination routes valid and mounted.")
+        else:
+            typer.echo(
+                "Route validation failed: One or more destination roots are missing or unmounted."
+            )
+            for m_type, rinfo in validation_results.items():
+                for err in rinfo["errors"]:
+                    typer.echo(f"  [{m_type}] {err}")
+
+    if not all_valid:
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
+
+
+app.add_typer(routes_app, name="routes")
 
 
 def main() -> None:

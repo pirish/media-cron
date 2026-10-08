@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 # Exit code constants
 EXIT_SUCCESS = 0
@@ -53,6 +54,8 @@ class DiscoveredItem:
     modified_time: float
     is_archive: bool = False
     is_directory: bool = False
+    source_media_type: Any = None
+    source_endpoint_id: str | None = None
 
 
 @dataclass
@@ -85,6 +88,8 @@ class MediaAsset:
     subtitle_files: list[Path] = field(default_factory=list)
     ancillary_files: list[Path] = field(default_factory=list)
     destination_rel_path: Path | None = None
+    source_media_type: Any = None
+    source_endpoint_id: str | None = None
 
 
 @dataclass
@@ -129,6 +134,7 @@ class BatchSummary:
     video_summary: dict | None = None
     unrecognized_count: int = 0
     review_staged_count: int = 0
+    routing_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         data = {
@@ -170,4 +176,41 @@ class BatchSummary:
             data["music_summary"] = self.music_summary
         if self.video_summary is not None:
             data["video_summary"] = self.video_summary
+        if self.routing_summary is not None:
+            data["routing_summary"] = {
+                k: (v.to_dict() if hasattr(v, "to_dict") else v)
+                for k, v in self.routing_summary.items()
+            }
         return data
+
+
+@dataclass
+class MediaRouteSummary:
+    media_type: str
+    source_count: int = 0
+    destination_path: str = ""
+    destination_type: str = "library"
+    transfer_mode: str = "hardlink"
+    scanned_count: int = 0
+    processed_count: int = 0
+    spooled_count: int = 0
+    review_staged_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "media_type": self.media_type,
+            "source_count": self.source_count,
+            "destination_path": self.destination_path,
+            "destination_type": self.destination_type,
+            "transfer_mode": self.transfer_mode,
+            "scanned_count": self.scanned_count,
+            "processed_count": self.processed_count,
+            "spooled_count": self.spooled_count,
+            "review_staged_count": self.review_staged_count,
+            "skipped_count": self.skipped_count,
+            "error_count": self.error_count,
+            "errors": list(self.errors),
+        }

@@ -20,6 +20,7 @@ from media_cron.models import (
     DiscoveredItem,
     MediaAsset,
     MediaCategory,
+    MediaRouteSummary,
     OperationPlan,
     OperationResult,
     OperationStatus,
@@ -31,6 +32,13 @@ from media_cron.plugins.input.directory import DirectoryScannerInput
 from media_cron.plugins.input.torrent import TorrentInputPlugin
 from media_cron.plugins.output.torrent_seed import TorrentClientSeedOutput
 from media_cron.plugins.registry import PluginRegistry, default_registry
+from media_cron.routing.engine import MediaRoutingEngine
+from media_cron.routing.models import (
+    CATEGORY_TO_MEDIA_TYPE,
+    DestinationEndpointType,
+    SupportedMediaType,
+)
+from media_cron.routing.resolver import RouteResolver
 from media_cron.torrent.base import TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig
 
@@ -47,6 +55,20 @@ class Pipeline:
         self.config = config
         self.registry = registry or default_registry
         self.target_torrent_identifier = target_torrent_identifier
+        self.route_resolver = RouteResolver()
+        self.routing_engine = MediaRoutingEngine(self.config)
+        self.resolved_routes = self.route_resolver.resolve_all_routes(self.config)
+
+        # Wire route spool destinations to video / music configs if configured
+
+        music_route = self.resolved_routes.get(SupportedMediaType.MUSIC)
+        if (
+            music_route
+            and music_route.destination_endpoint.type == DestinationEndpointType.SPOOL
+            and getattr(self.config, "music", None)
+        ):
+            self.config.music.spool_dir = music_route.destination_endpoint.path
+            self.config.music.workflow_mode = MusicWorkflowMode.SPOOL
         self._last_audiobook_summary: dict | None = None
         self._last_books_summary: dict | None = None
         self._last_music_summary: dict | None = None
@@ -96,6 +118,16 @@ class Pipeline:
 
     def _resolve_destination_path(self, asset: MediaAsset) -> Path:
         """Resolves target library path using configured templates."""
+        media_type = CATEGORY_TO_MEDIA_TYPE.get(asset.category)
+        if media_type and media_type in self.resolved_routes:
+            route = self.resolved_routes[media_type]
+            if asset.destination_rel_path is not None:
+                dest_root = route.destination_endpoint.path or (
+                    self.config.paths.destination_dir or Path("/tmp/media")
+                )
+                return dest_root / asset.destination_rel_path
+            return self.routing_engine.resolve_target_destination(asset, route)
+
         dest_root = self.config.paths.destination_dir or Path("/tmp/media")
         if asset.destination_rel_path is not None:
             return dest_root / asset.destination_rel_path
@@ -222,21 +254,57 @@ class Pipeline:
 
         return dest_root / rel_path
 
+    def _get_route_config(self, media_type: SupportedMediaType):
+        if media_type == SupportedMediaType.MUSIC:
+            return getattr(getattr(self.config, "music", None), "route", None)
+        elif media_type == SupportedMediaType.AUDIOBOOKS:
+            return getattr(getattr(self.config, "audiobook", None), "route", None)
+        elif media_type == SupportedMediaType.BOOKS:
+            return getattr(getattr(self.config, "books", None), "route", None)
+        elif media_type == SupportedMediaType.MOVIES:
+            return getattr(getattr(self.config, "video", None), "movies_route", None)
+        elif media_type == SupportedMediaType.TV:
+            return getattr(getattr(self.config, "video", None), "tv_route", None)
+        return None
+
     def plan(
         self, source_path: Path | None, staging_path: Path
     ) -> tuple[list[OperationPlan], list[DiscoveredItem], TorrentInputPlugin | None]:
         """Generates a list of planned operations without mutating files."""
         seen_paths: set[Path] = set()
+        raw_items: list[DiscoveredItem] = []
+        torrent_plugin = None
+
+        # 1. Discover items from route-specific source endpoints
+        for media_type, route in self.resolved_routes.items():
+            cfg_media = getattr(self.config, media_type.value, None)
+            if media_type in (SupportedMediaType.MOVIES, SupportedMediaType.TV):
+                cfg_media = getattr(self.config, "video", None)
+            elif media_type == SupportedMediaType.AUDIOBOOKS:
+                cfg_media = getattr(self.config, "audiobook", None)
+            if cfg_media is not None and hasattr(cfg_media, "enabled") and not cfg_media.enabled:
+                continue
+
+            route_cfg = self._get_route_config(media_type)
+            if route_cfg and route_cfg.sources:
+                for item in self.routing_engine.discover_route_items(
+                    route, staging_path, dry_run=True
+                ):
+                    resolved = item.source_path.resolve()
+                    if resolved not in seen_paths:
+                        seen_paths.add(resolved)
+                        raw_items.append(item)
+
+        # 2. Discover items from global source or staging
         if source_path is not None and source_path.resolve() == staging_path.resolve():
             scanner = DirectoryScannerInput()
-            raw_items = list(scanner.discover(staging_path, staging_path, dry_run=True))
-            for item in raw_items:
-                seen_paths.add(item.source_path.resolve())
-            torrent_plugin = None
+            for item in scanner.discover(staging_path, staging_path, dry_run=True):
+                resolved = item.source_path.resolve()
+                if resolved not in seen_paths:
+                    seen_paths.add(resolved)
+                    raw_items.append(item)
         else:
             input_plugins, torrent_plugin = self._get_input_plugins()
-            raw_items = []
-
             for plugin in input_plugins:
                 if plugin.plugin_name == "directory_scanner" and (
                     not source_path or not Path(source_path).exists()
@@ -264,6 +332,8 @@ class Pipeline:
                                 is_archive=sub_file.suffix.lower()
                                 in (".zip", ".rar", ".7z", ".tar"),
                                 is_directory=False,
+                                source_media_type=item.source_media_type,
+                                source_endpoint_id=item.source_endpoint_id,
                             )
                         )
             else:
@@ -460,6 +530,30 @@ class Pipeline:
                         break
 
                     asset = lookup.enrich(item)
+                    asset.source_media_type = getattr(item, "source_media_type", None)
+                    asset.source_endpoint_id = getattr(item, "source_endpoint_id", None)
+
+                    if not self.routing_engine.validate_source_type_match(
+                        asset, asset.source_media_type
+                    ):
+                        review_dir = (
+                            self.config.paths.review_dir
+                            if hasattr(self.config, "paths") and self.config.paths.review_dir
+                            else (staging_path / "review")
+                        )
+                        plans.append(
+                            OperationPlan(
+                                op_type=OperationType.REVIEW_STAGE,
+                                transfer_mode=mode,
+                                source_path=asset.path,
+                                destination_path=review_dir / asset.path.name,
+                                reason=f"Mismatched media type: identified as '{asset.category.value}' but ingested from '{asset.source_media_type.value}' source",
+                                dry_run=True,
+                            )
+                        )
+                        handled = True
+                        break
+
                     if (
                         asset.category == MediaCategory.AUDIO_MUSIC
                         and hasattr(self.config, "music")
@@ -467,11 +561,19 @@ class Pipeline:
                     ):
                         continue
 
+                    media_type = CATEGORY_TO_MEDIA_TYPE.get(asset.category)
+                    target_mode = mode
+                    if media_type and media_type in self.resolved_routes:
+                        route = self.resolved_routes[media_type]
+                        if not self.route_resolver.validate_mount_safety(route):
+                            continue
+                        target_mode = route.transfer_mode
+
                     dest_path = self._resolve_destination_path(asset)
                     plans.append(
                         OperationPlan(
                             op_type=OperationType.ORGANIZE,
-                            transfer_mode=mode,
+                            transfer_mode=target_mode,
                             source_path=asset.path,
                             destination_path=dest_path,
                             reason=f"Identified as {asset.category.value}: '{asset.clean_title}'",
@@ -492,7 +594,7 @@ class Pipeline:
                         plans.append(
                             OperationPlan(
                                 op_type=OperationType.ORGANIZE,
-                                transfer_mode=mode,
+                                transfer_mode=target_mode,
                                 source_path=sub,
                                 destination_path=dest_sub,
                                 reason=f"Preserved associated subtitle for '{asset.clean_title}'",
@@ -641,6 +743,131 @@ class Pipeline:
 
         return plans, discovered_items, torrent_plugin
 
+    def _build_routing_summary(
+        self,
+        plans: list[OperationPlan],
+        results: list[OperationResult] | None = None,
+        discovered_count: int = 0,
+    ) -> dict[str, MediaRouteSummary]:
+        routing_summary: dict[str, MediaRouteSummary] = {}
+
+        for media_type, route in self.resolved_routes.items():
+            cfg_media = getattr(self.config, media_type.value, None)
+            if media_type in (SupportedMediaType.MOVIES, SupportedMediaType.TV):
+                cfg_media = getattr(self.config, "video", None)
+            elif media_type == SupportedMediaType.AUDIOBOOKS:
+                cfg_media = getattr(self.config, "audiobook", None)
+            if cfg_media is not None and hasattr(cfg_media, "enabled") and not cfg_media.enabled:
+                continue
+
+            dest_path_str = (
+                str(route.destination_endpoint.path)
+                if route.destination_endpoint and route.destination_endpoint.path
+                else ""
+            )
+            summary = MediaRouteSummary(
+                media_type=media_type.value,
+                source_count=len(route.source_endpoints),
+                destination_path=dest_path_str,
+                destination_type=route.destination_endpoint.type.value
+                if route.destination_endpoint
+                else "library",
+                transfer_mode=route.transfer_mode.value
+                if hasattr(route.transfer_mode, "value")
+                else str(route.transfer_mode),
+                scanned_count=0,
+                processed_count=0,
+                spooled_count=0,
+                review_staged_count=0,
+                skipped_count=0,
+                error_count=0,
+                errors=[],
+            )
+            routing_summary[media_type.value] = summary
+
+        for plan in plans:
+            plan_media_type = None
+            dest_str = str(plan.destination_path or "")
+            src_str = str(plan.source_path or "")
+            reason_lower = plan.reason.lower()
+
+            if (
+                "music" in reason_lower
+                or "/music" in dest_str.lower()
+                or ".flac" in src_str.lower()
+                or ".mp3" in src_str.lower()
+            ):
+                plan_media_type = SupportedMediaType.MUSIC.value
+            elif (
+                "audiobook" in reason_lower
+                or "/audiobook" in dest_str.lower()
+                or ".m4b" in src_str.lower()
+            ):
+                plan_media_type = SupportedMediaType.AUDIOBOOKS.value
+            elif (
+                "book" in reason_lower
+                or "/book" in dest_str.lower()
+                or ".epub" in src_str.lower()
+                or ".pdf" in src_str.lower()
+            ):
+                plan_media_type = SupportedMediaType.BOOKS.value
+            elif "movie" in reason_lower or "/movies" in dest_str.lower():
+                plan_media_type = SupportedMediaType.MOVIES.value
+            elif "series" in reason_lower or "tv" in reason_lower or "/tv" in dest_str.lower():
+                plan_media_type = SupportedMediaType.TV.value
+
+            if plan_media_type and plan_media_type in routing_summary:
+                m_sum = routing_summary[plan_media_type]
+                m_sum.scanned_count += 1
+                if plan.op_type in (OperationType.ORGANIZE, OperationType.UPGRADE_REPLACE):
+                    if getattr(plan, "is_video_spool", False) or m_sum.destination_type == "spool":
+                        m_sum.spooled_count += 1
+                    m_sum.processed_count += 1
+                elif plan.op_type == OperationType.REVIEW_STAGE:
+                    m_sum.review_staged_count += 1
+                elif plan.op_type in (OperationType.SKIP_COLLISION,):
+                    m_sum.skipped_count += 1
+
+        if results:
+            for r in results:
+                if r.status == OperationStatus.FAILED:
+                    plan_media_type = None
+                    dest_str = str(r.plan.destination_path or "")
+                    src_str = str(r.plan.source_path or "")
+                    reason_lower = r.plan.reason.lower()
+                    if (
+                        "music" in reason_lower
+                        or "/music" in dest_str.lower()
+                        or ".flac" in src_str.lower()
+                    ):
+                        plan_media_type = SupportedMediaType.MUSIC.value
+                    elif (
+                        "audiobook" in reason_lower
+                        or "/audiobook" in dest_str.lower()
+                        or ".m4b" in src_str.lower()
+                    ):
+                        plan_media_type = SupportedMediaType.AUDIOBOOKS.value
+                    elif (
+                        "book" in reason_lower
+                        or "/book" in dest_str.lower()
+                        or ".epub" in src_str.lower()
+                    ):
+                        plan_media_type = SupportedMediaType.BOOKS.value
+                    elif "movie" in reason_lower or "/movies" in dest_str.lower():
+                        plan_media_type = SupportedMediaType.MOVIES.value
+                    elif (
+                        "series" in reason_lower
+                        or "tv" in reason_lower
+                        or "/tv" in dest_str.lower()
+                    ):
+                        plan_media_type = SupportedMediaType.TV.value
+                    if plan_media_type and plan_media_type in routing_summary:
+                        routing_summary[plan_media_type].error_count += 1
+                        if r.error:
+                            routing_summary[plan_media_type].errors.append(r.error)
+
+        return routing_summary
+
     def run(self) -> BatchSummary:
         """Executes the pipeline according to active configuration."""
         started_at = datetime.now(UTC)
@@ -658,6 +885,11 @@ class Pipeline:
             and self.config.video.spool_dir
         )
 
+        has_route_dest = any(
+            route.destination_endpoint and route.destination_endpoint.path
+            for route in self.resolved_routes.values()
+        )
+
         if (
             not dest_dir
             and not (
@@ -667,6 +899,7 @@ class Pipeline:
                 and self.config.music.spool_dir
             )
             and not is_video_spool
+            and not has_route_dest
         ):
             return BatchSummary(
                 batch_id=batch_id,
@@ -674,9 +907,12 @@ class Pipeline:
                 completed_at=datetime.now(UTC),
                 exit_code=EXIT_CONFIG_ERROR,
                 errors=["Destination directory must be specified."],
+                routing_summary=self._build_routing_summary([]),
             )
 
-        if not self.config.active_torrent_client and not source_dir:
+        has_route_source = any(route.source_endpoints for route in self.resolved_routes.values())
+
+        if not self.config.active_torrent_client and not source_dir and not has_route_source:
             return BatchSummary(
                 batch_id=batch_id,
                 started_at=started_at,
@@ -685,6 +921,7 @@ class Pipeline:
                 errors=[
                     "Source directory must be specified when torrent client is not configured."
                 ],
+                routing_summary=self._build_routing_summary([]),
             )
 
         if dry_run:
@@ -706,6 +943,10 @@ class Pipeline:
                     "relocated_torrents": 0,
                     "tagged_torrents": 0,
                 }
+
+            routing_summary = self._build_routing_summary(
+                plans, results=results, discovered_count=len(discovered)
+            )
 
             return BatchSummary(
                 batch_id=batch_id,
@@ -732,6 +973,7 @@ class Pipeline:
                 books_summary=self._last_books_summary,
                 music_summary=self._last_music_summary,
                 video_summary=self._get_video_summary(),
+                routing_summary=routing_summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -1042,6 +1284,10 @@ class Pipeline:
 
                 exit_code = EXIT_SUCCESS if error_count == 0 else EXIT_PARTIAL_OR_LOCKED
 
+                routing_summary = self._build_routing_summary(
+                    plans, results=results, discovered_count=len(staged_items)
+                )
+
                 return BatchSummary(
                     batch_id=batch_id,
                     started_at=started_at,
@@ -1063,6 +1309,7 @@ class Pipeline:
                     books_summary=self._last_books_summary,
                     music_summary=self._last_music_summary,
                     video_summary=self._get_video_summary(),
+                    routing_summary=routing_summary,
                 )
         except LockContentionError as e:
             return BatchSummary(
@@ -1071,6 +1318,7 @@ class Pipeline:
                 completed_at=datetime.now(UTC),
                 exit_code=EXIT_PARTIAL_OR_LOCKED,
                 errors=[str(e)],
+                routing_summary=self._build_routing_summary([]),
             )
         except Exception as e:
             return BatchSummary(
@@ -1079,4 +1327,5 @@ class Pipeline:
                 completed_at=datetime.now(UTC),
                 exit_code=EXIT_FATAL_ERROR,
                 errors=[f"Fatal error: {e}"],
+                routing_summary=self._build_routing_summary([]),
             )

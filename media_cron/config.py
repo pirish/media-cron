@@ -5,6 +5,13 @@ from pathlib import Path
 import yaml
 
 from media_cron.metadata.models import MediaServerConfig
+from media_cron.routing.models import (
+    DestinationEndpointConfig,
+    DestinationEndpointType,
+    MediaRouteConfig,
+    SourceEndpointConfig,
+    SourceEndpointType,
+)
 from media_cron.torrent.models import (
     PathMappingRule,
     TorrentClientConfig,
@@ -144,6 +151,7 @@ class BooksConfig:
         )
     )
     providers: dict[str, ExternalProviderConfig] = field(default_factory=default_book_providers)
+    route: MediaRouteConfig = field(default_factory=MediaRouteConfig)
 
 
 @dataclass
@@ -154,6 +162,7 @@ class AudiobookConfig:
     providers: dict[str, ExternalProviderConfig] = field(
         default_factory=default_audiobook_providers
     )
+    route: MediaRouteConfig = field(default_factory=MediaRouteConfig)
 
 
 def default_music_providers() -> dict[str, ExternalProviderConfig]:
@@ -199,6 +208,7 @@ class MusicConfig:
         )
     )
     providers: dict[str, ExternalProviderConfig] = field(default_factory=default_music_providers)
+    route: MediaRouteConfig = field(default_factory=MediaRouteConfig)
 
 
 @dataclass
@@ -216,12 +226,101 @@ class VideoConfig:
     )
     tv_path_template: str = "{library_tv_dir}/{show}/Season {season:02d}/{show} - S{season:02d}E{episode:02d} - {title} [{resolution}].{ext}"
     media_server: MediaServerConfig = field(default_factory=MediaServerConfig)
+    movies_route: MediaRouteConfig = field(default_factory=MediaRouteConfig)
+    tv_route: MediaRouteConfig = field(default_factory=MediaRouteConfig)
 
 
 @dataclass
 class ReviewConfig:
     enabled: bool = True
     max_age_days: int = 0
+
+
+def parse_route_config(data: dict) -> MediaRouteConfig:
+    route = MediaRouteConfig()
+    if "transfer_mode" in data and data["transfer_mode"]:
+        route.transfer_mode = str(data["transfer_mode"]).lower()
+    if "sources" in data and isinstance(data["sources"], list):
+        sources = []
+        for s in data["sources"]:
+            if isinstance(s, dict):
+                stype_str = str(s.get("type", "directory")).lower()
+                stype = (
+                    SourceEndpointType.TORRENT
+                    if stype_str == "torrent"
+                    else SourceEndpointType.DIRECTORY
+                )
+                sources.append(
+                    SourceEndpointConfig(
+                        type=stype,
+                        path=Path(s["path"]) if s.get("path") else None,
+                        client_profile=s.get("client_profile"),
+                        category=s.get("category"),
+                        tag=s.get("tag"),
+                        exclude_categories=list(s.get("exclude_categories", ["media-cron-done"])),
+                        exclude_tags=list(s.get("exclude_tags", ["media-cron-processed"])),
+                        min_progress=float(s.get("min_progress", 1.0)),
+                    )
+                )
+            elif isinstance(s, str):
+                sources.append(
+                    SourceEndpointConfig(type=SourceEndpointType.DIRECTORY, path=Path(s))
+                )
+        route.sources = sources
+    if "destination" in data and isinstance(data["destination"], dict):
+        d = data["destination"]
+        dtype_str = str(d.get("type", "library")).lower()
+        dtype = (
+            DestinationEndpointType.SPOOL
+            if dtype_str == "spool"
+            else DestinationEndpointType.LIBRARY
+        )
+        route.destination = DestinationEndpointConfig(
+            type=dtype,
+            path=Path(d["path"]) if d.get("path") else None,
+            template=d.get("template"),
+        )
+    return route
+
+
+def apply_route_env_overrides(route: MediaRouteConfig, prefix: str) -> None:
+    env_transfer = os.getenv(f"MEDIA_CRON_{prefix}_TRANSFER_MODE")
+    if env_transfer:
+        route.transfer_mode = env_transfer.lower()
+
+    env_sources = os.getenv(f"MEDIA_CRON_{prefix}_SOURCE_DIRS")
+    if env_sources:
+        paths = [Path(p.strip()) for p in env_sources.split(",") if p.strip()]
+        for p in paths:
+            if not any(
+                s.type == SourceEndpointType.DIRECTORY and s.path == p for s in route.sources
+            ):
+                route.sources.append(
+                    SourceEndpointConfig(type=SourceEndpointType.DIRECTORY, path=p)
+                )
+
+    env_torrent_cat = os.getenv(f"MEDIA_CRON_{prefix}_TORRENT_CATEGORY")
+    if env_torrent_cat:
+        route.sources.append(
+            SourceEndpointConfig(
+                type=SourceEndpointType.TORRENT,
+                category=env_torrent_cat,
+            )
+        )
+
+    env_dest_path = os.getenv(f"MEDIA_CRON_{prefix}_DESTINATION_PATH")
+    env_dest_type = os.getenv(f"MEDIA_CRON_{prefix}_DESTINATION_TYPE")
+    if env_dest_path or env_dest_type:
+        if not route.destination:
+            route.destination = DestinationEndpointConfig()
+        if env_dest_path:
+            route.destination.path = Path(env_dest_path)
+        if env_dest_type:
+            route.destination.type = (
+                DestinationEndpointType.SPOOL
+                if env_dest_type.lower() == "spool"
+                else DestinationEndpointType.LIBRARY
+            )
 
 
 @dataclass
@@ -381,6 +480,10 @@ class MediaCronConfig:
                         if "rate_limit_delay" in pdata:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.audiobook.providers[pname] = prov_cfg
+                if "route" in ab and isinstance(ab["route"], dict):
+                    cfg.audiobook.route = parse_route_config(ab["route"])
+                elif any(k in ab for k in ("sources", "destination", "transfer_mode")):
+                    cfg.audiobook.route = parse_route_config(ab)
 
             if "books" in data and isinstance(data["books"], dict):
                 bk = data["books"]
@@ -438,6 +541,10 @@ class MediaCronConfig:
                         if "rate_limit_delay" in pdata:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.books.providers[pname] = prov_cfg
+                if "route" in bk and isinstance(bk["route"], dict):
+                    cfg.books.route = parse_route_config(bk["route"])
+                elif any(k in bk for k in ("sources", "destination", "transfer_mode")):
+                    cfg.books.route = parse_route_config(bk)
 
             if "music" in data and isinstance(data["music"], dict):
                 m = data["music"]
@@ -495,6 +602,10 @@ class MediaCronConfig:
                         if "rate_limit_delay" in pdata:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.music.providers[pname] = prov_cfg
+                if "route" in m and isinstance(m["route"], dict):
+                    cfg.music.route = parse_route_config(m["route"])
+                elif any(k in m for k in ("sources", "destination", "transfer_mode")):
+                    cfg.music.route = parse_route_config(m)
 
             if "video" in data and isinstance(data["video"], dict):
                 v = data["video"]
@@ -533,6 +644,14 @@ class MediaCronConfig:
                         cfg.video.media_server.timeout_seconds = float(ms["timeout_seconds"])
                     if "max_retries" in ms:
                         cfg.video.media_server.max_retries = int(ms["max_retries"])
+                if "movies" in v and isinstance(v["movies"], dict):
+                    cfg.video.movies_route = parse_route_config(v["movies"])
+                elif "movies_route" in v and isinstance(v["movies_route"], dict):
+                    cfg.video.movies_route = parse_route_config(v["movies_route"])
+                if "tv" in v and isinstance(v["tv"], dict):
+                    cfg.video.tv_route = parse_route_config(v["tv"])
+                elif "tv_route" in v and isinstance(v["tv_route"], dict):
+                    cfg.video.tv_route = parse_route_config(v["tv_route"])
 
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
@@ -808,5 +927,12 @@ class MediaCronConfig:
         )
         if cfg.video.spool_dir and not is_video_mode_explicit:
             cfg.video.workflow_mode = "spool"
+
+        # Media routes environment overrides
+        apply_route_env_overrides(cfg.music.route, "MUSIC")
+        apply_route_env_overrides(cfg.books.route, "BOOKS")
+        apply_route_env_overrides(cfg.audiobook.route, "AUDIOBOOK")
+        apply_route_env_overrides(cfg.video.movies_route, "MOVIES")
+        apply_route_env_overrides(cfg.video.tv_route, "TV")
 
         return cfg
