@@ -66,6 +66,9 @@ spec:
                 - name: cache
                   mountPath: {{ .Values.persistence.cache.mountPath }}
                 {{- end }}
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
               resources:
                 {{- toYaml .Values.resources | nindent 16 }}
           volumes:
@@ -76,13 +79,24 @@ spec:
             {{- end }}
             {{- if .Values.persistence.config.enabled }}
             - name: config
+              {{- if .Values.persistence.config.existingClaim }}
               persistentVolumeClaim:
-                claimName: {{ .Values.persistence.config.existingClaim | default (printf "%s-config" (include "media-cron.fullname" .)) }}
+                claimName: {{ .Values.persistence.config.existingClaim }}
+              {{- else if .Values.persistence.config.existingConfigMap }}
+              configMap:
+                name: {{ .Values.persistence.config.existingConfigMap }}
+              {{- else }}
+              configMap:
+                name: {{ printf "%s-config" (include "media-cron.fullname" .) }}
+              {{- end }}
             {{- end }}
             {{- if .Values.persistence.cache.enabled }}
             - name: cache
               persistentVolumeClaim:
                 claimName: {{ .Values.persistence.cache.existingClaim | default (printf "%s-cache" (include "media-cron.fullname" .)) }}
+            {{- end }}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- with .Values.nodeSelector }}
           nodeSelector:

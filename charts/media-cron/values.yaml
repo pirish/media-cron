@@ -69,6 +69,7 @@ persistence:
   config:
     enabled: false
     existingClaim: ""
+    existingConfigMap: ""
     mountPath: /config
   cache:
     enabled: true
@@ -92,3 +93,6 @@ resources:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+extraVolumes: []
+extraVolumeMounts: []

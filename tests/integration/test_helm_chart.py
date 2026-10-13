@@ -58,6 +58,55 @@ def test_helm_template_deployment_mode():
     assert "kind: CronJob" not in manifest
 
 
+def test_helm_template_configmap_mount():
+    """Verify persistence.config mounts a configMap volume when enabled."""
+    res = subprocess.run(
+        [
+            "helm",
+            "template",
+            "test-cron",
+            str(CHART_DIR),
+            "--set",
+            "persistence.config.enabled=true",
+            "--set",
+            "persistence.config.existingConfigMap=media-cron-config",
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"Helm template failed:\n{res.stderr}\n{res.stdout}"
+    manifest = res.stdout
+    assert "mountPath: /config" in manifest
+    assert "name: config" in manifest
+    assert "configMap:" in manifest
+    assert "name: media-cron-config" in manifest
+
+
+def test_helm_template_pvc_config_mount():
+    """Verify persistence.config mounts a PVC volume when existingClaim is specified."""
+    res = subprocess.run(
+        [
+            "helm",
+            "template",
+            "test-cron",
+            str(CHART_DIR),
+            "--set",
+            "persistence.config.enabled=true",
+            "--set",
+            "persistence.config.existingClaim=my-config-pvc",
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"Helm template failed:\n{res.stderr}\n{res.stdout}"
+    manifest = res.stdout
+    assert "mountPath: /config" in manifest
+    assert "persistentVolumeClaim:" in manifest
+    assert "claimName: my-config-pvc" in manifest
+
+
 def test_helm_package(tmp_path):
     """Verify that helm package succeeds and produces a chart archive."""
     res = subprocess.run(
