@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import typer
@@ -15,6 +16,10 @@ import media_cron.plugins.output.organizer  # noqa: F401
 import media_cron.plugins.output.seed  # noqa: F401
 import media_cron.torrent  # noqa: F401
 from media_cron.config import MediaCronConfig
+from media_cron.logging import setup_logging
+from media_cron.logging.models import (
+    LoggingConfig,
+)
 from media_cron.models import (
     EXIT_CONFIG_ERROR,
     EXIT_FATAL_ERROR,
@@ -331,10 +336,58 @@ def run_command(
         None, "--config", "-c", help="Path to YAML configuration file"
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose diagnostic output"),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Suppress routine output and log only errors"
+    ),
+    log_level: str | None = typer.Option(
+        None, "--log-level", help="Minimum logging severity (debug, info, warning, error)"
+    ),
+    log_file: Path | None = typer.Option(None, "--log-file", help="Path to write log records"),
+    console: bool | None = typer.Option(
+        None, "--console/--no-console", help="Force enable or disable console log emission"
+    ),
+    log_format: str | None = typer.Option(
+        None, "--log-format", help="Log output format (text, json)"
+    ),
+    log_max_size_mb: int | None = typer.Option(
+        None, "--log-max-size-mb", help="Max size of log file in MB before rotation"
+    ),
+    log_backup_count: int | None = typer.Option(
+        None, "--log-backup-count", help="Number of rotated backup log files to retain"
+    ),
 ) -> None:
     """Ingest, clean, sanitize, and organize media into destination library."""
     # 1. Load config
     cfg = MediaCronConfig.load(config_path=config)
+
+    # Apply logging configuration and CLI overrides
+    try:
+        effective_level = None
+        if log_level is not None:
+            effective_level = log_level
+        elif verbose:
+            effective_level = "debug"
+        elif quiet:
+            effective_level = "error"
+
+        cfg.logging = LoggingConfig.resolve_effective_config(
+            base_config=cfg.logging,
+            cli_level=effective_level,
+            cli_file=log_file,
+            cli_console=console,
+            cli_format=log_format,
+            cli_max_size_mb=log_max_size_mb,
+            cli_backup_count=log_backup_count,
+        )
+        setup_logging(cfg.logging)
+        logging.getLogger("media_cron.config").debug("Active configuration resolved")
+    except ValueError as e:
+        msg = f"Configuration Error: {e}"
+        if format.lower() == "json":
+            typer.echo(json.dumps({"exit_code": EXIT_CONFIG_ERROR, "errors": [msg]}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
     # 2. Apply CLI overrides
     if source:

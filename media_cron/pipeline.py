@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,8 @@ from media_cron.routing.models import (
 from media_cron.routing.resolver import RouteResolver
 from media_cron.torrent.base import TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig
+
+logger = logging.getLogger("media_cron.pipeline")
 
 
 class Pipeline:
@@ -310,6 +313,8 @@ class Pipeline:
                     not source_path or not Path(source_path).exists()
                 ):
                     continue
+                if source_path:
+                    logger.debug("Evaluating file candidates in %s", source_path)
                 for item in plugin.discover(
                     source_path or staging_path, staging_path, dry_run=True
                 ):
@@ -874,6 +879,12 @@ class Pipeline:
         batch_id = uuid.uuid4()
         dry_run = self.config.general.dry_run
 
+        logger.info(
+            "Initializing media organization pipeline (batch_id=%s, dry_run=%s)",
+            batch_id,
+            dry_run,
+        )
+
         source_dir = self.config.paths.source_dir
         staging_dir = self.config.paths.staging_dir
         dest_dir = self.config.paths.destination_dir
@@ -926,6 +937,15 @@ class Pipeline:
 
         if dry_run:
             plans, discovered, torrent_plugin = self.plan(source_dir, staging_dir)
+            logger.info("Ingestion scan completed: %d items discovered", len(discovered))
+            for p in plans:
+                logger.info(
+                    "[DRY-RUN] Planned %s: %s -> %s (%s)",
+                    getattr(p.op_type, "value", p.op_type),
+                    p.source_path,
+                    p.destination_path,
+                    p.reason,
+                )
             results = [
                 OperationResult(
                     plan=p, status=OperationStatus.SUCCESS, message="Simulated in dry-run mode"
@@ -996,6 +1016,8 @@ class Pipeline:
                         if resolved not in seen_staged:
                             seen_staged.add(resolved)
                             staged_items.append(item)
+
+                logger.info("Ingestion scan completed: %d items discovered", len(staged_items))
 
                 # 2. Generate and execute plans
                 plans, _, _ = self.plan(staging_dir, staging_dir)
@@ -1107,6 +1129,10 @@ class Pipeline:
                                     seeding_paths=seeding_paths,
                                     dry_run=False,
                                 )
+                                logger.info(
+                                    "Staged %d unrecognized item(s) to review directory",
+                                    len(source_paths),
+                                )
                                 review_staged_count += 1
                                 results.append(
                                     OperationResult(
@@ -1128,6 +1154,12 @@ class Pipeline:
                         continue
 
                     plan.dry_run = False
+                    logger.info(
+                        "Executing %s: %s -> %s",
+                        getattr(plan.op_type, "value", plan.op_type),
+                        plan.source_path,
+                        plan.destination_path,
+                    )
                     op_result = None
                     last_skipped = None
                     for out in outputs:

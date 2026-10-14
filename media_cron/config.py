@@ -4,6 +4,12 @@ from pathlib import Path
 
 import yaml
 
+from media_cron.logging.models import (
+    LogDestination,
+    LogFormat,
+    LoggingConfig,
+    LogLevel,
+)
 from media_cron.metadata.models import MediaServerConfig
 from media_cron.routing.models import (
     DestinationEndpointConfig,
@@ -337,6 +343,7 @@ class MediaCronConfig:
     music: MusicConfig = field(default_factory=MusicConfig)
     video: VideoConfig = field(default_factory=lambda: VideoConfig(enabled=False))
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -382,6 +389,21 @@ class MediaCronConfig:
                     cfg.review.enabled = bool(r["enabled"])
                 if "max_age_days" in r:
                     cfg.review.max_age_days = int(r["max_age_days"])
+
+            if "logging" in data and isinstance(data["logging"], dict):
+                l_data = data["logging"]
+                if "level" in l_data and l_data["level"]:
+                    cfg.logging.level = LogLevel.from_str(str(l_data["level"]))
+                if "destination" in l_data and l_data["destination"]:
+                    cfg.logging.destination = LogDestination.from_str(str(l_data["destination"]))
+                if "file_path" in l_data and l_data["file_path"]:
+                    cfg.logging.file_path = Path(l_data["file_path"])
+                if "format" in l_data and l_data["format"]:
+                    cfg.logging.format = LogFormat.from_str(str(l_data["format"]))
+                if "max_size_mb" in l_data and l_data["max_size_mb"] is not None:
+                    cfg.logging.max_size_mb = int(l_data["max_size_mb"])
+                if "backup_count" in l_data and l_data["backup_count"] is not None:
+                    cfg.logging.backup_count = int(l_data["backup_count"])
 
             if "general" in data:
                 g = data["general"]
@@ -934,5 +956,32 @@ class MediaCronConfig:
         apply_route_env_overrides(cfg.audiobook.route, "AUDIOBOOK")
         apply_route_env_overrides(cfg.video.movies_route, "MOVIES")
         apply_route_env_overrides(cfg.video.tv_route, "TV")
+
+        # Logging environment overrides
+        env_log_level = os.getenv("MEDIA_CRON_LOG_LEVEL")
+        if env_log_level:
+            cfg.logging.level = LogLevel.from_str(env_log_level)
+
+        env_log_dest = os.getenv("MEDIA_CRON_LOG_DESTINATION")
+        if env_log_dest:
+            cfg.logging.destination = LogDestination.from_str(env_log_dest)
+
+        env_log_file = os.getenv("MEDIA_CRON_LOG_FILE")
+        if env_log_file:
+            cfg.logging.file_path = Path(env_log_file)
+            if not env_log_dest and cfg.logging.destination == LogDestination.CONSOLE:
+                cfg.logging.destination = LogDestination.FILE
+
+        env_log_format = os.getenv("MEDIA_CRON_LOG_FORMAT")
+        if env_log_format:
+            cfg.logging.format = LogFormat.from_str(env_log_format)
+
+        env_log_size = os.getenv("MEDIA_CRON_LOG_MAX_SIZE_MB")
+        if env_log_size:
+            cfg.logging.max_size_mb = int(env_log_size)
+
+        env_log_backups = os.getenv("MEDIA_CRON_LOG_BACKUP_COUNT")
+        if env_log_backups:
+            cfg.logging.backup_count = int(env_log_backups)
 
         return cfg
