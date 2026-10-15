@@ -2,8 +2,8 @@ apiVersion: v2
 name: media-cron
 description: Pluggable media file organizer, sanitizer, and cleaner Kubernetes chart
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.3.0
+appVersion: "0.3.0"
 keywords:
   - media
   - cleaner
