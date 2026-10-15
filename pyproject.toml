@@ -34,6 +34,9 @@ media-cron = "media_cron.cli:app"
 where = ["."]
 include = ["media_cron*"]
 
+[tool.setuptools.package-data]
+"media_cron.metadata" = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

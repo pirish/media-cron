@@ -82,3 +82,79 @@ def test_pipeline_unrecognized_without_review_dir(tmp_path: Path):
     assert unrec_file.exists()
     assert summary.unrecognized_count >= 1
     assert summary.review_staged_count == 0
+
+
+def test_pipeline_unrecognized_with_torrent_plugin(tmp_path: Path):
+    """Verify that pipeline handles unrecognized staging when torrents with TorrentFile objects are active."""
+    from media_cron.torrent.models import TorrentFile, TorrentItem, TorrentState
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    seed_dir = tmp_path / "seed"
+    seed_dir.mkdir()
+
+    unrec_file = staging_dir / "Unknown_Payload.iso"
+    unrec_file.write_bytes(b"data" * 50)
+
+    cfg = MediaCronConfig(
+        paths=PathsConfig(
+            source_dir=staging_dir,
+            staging_dir=staging_dir,
+            destination_dir=dest_dir,
+            review_dir=review_dir,
+        ),
+        general=GeneralConfig(mode="copy", dry_run=False),
+    )
+
+    pipeline = Pipeline(cfg)
+
+    class DummyConfig:
+        def __init__(self):
+            from media_cron.torrent.models import TorrentSeedingConfig
+
+            self.seeding = TorrentSeedingConfig(mode="none")
+
+        def translate_path(self, p):
+            return Path(p)
+
+    class MockClient:
+        def relocate_storage(self, info_hash, destination):
+            return True
+
+        def apply_completion_state(self, info_hash, tag, category, pause=False):
+            return True
+
+    class DummyTorrentPlugin:
+        def __init__(self):
+            self.plugin_name = "torrent"
+            self.config = DummyConfig()
+            self.client = MockClient()
+            self.processed_torrents = [
+                TorrentItem(
+                    info_hash="abc12345",
+                    name="Movie.2024",
+                    total_size=1024 * 1024,
+                    progress=1.0,
+                    state=TorrentState.SEEDING,
+                    save_path=str(seed_dir),
+                    content_path=str(seed_dir / "Movie.2024.mkv"),
+                    files=[
+                        TorrentFile(name="Movie.2024.mkv", size=1024 * 1024),
+                    ],
+                )
+            ]
+
+        def discover(self, source, staging, dry_run=False):
+            return []
+
+    dummy = DummyTorrentPlugin()
+    pipeline._get_input_plugins = lambda: ([], dummy)
+
+    summary = pipeline.run()
+    assert summary.exit_code == 0
+    assert summary.unrecognized_count >= 1
+    assert summary.review_staged_count >= 1

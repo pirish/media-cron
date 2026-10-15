@@ -29,6 +29,14 @@ def test_package_build_and_twine_validation(tmp_path):
     assert len(sdist_files) == 1, f"Expected 1 sdist archive, found {len(sdist_files)}"
     assert len(wheel_files) == 1, f"Expected 1 wheel archive, found {len(wheel_files)}"
 
+    import zipfile
+
+    with zipfile.ZipFile(wheel_files[0]) as zf:
+        wheel_entries = zf.namelist()
+        assert any("udc_summary.json" in e for e in wheel_entries), (
+            "udc_summary.json must be bundled in wheel package_data"
+        )
+
     # Step 3: Run twine check --strict
     twine_res = subprocess.run(
         [sys.executable, "-m", "twine", "check", "--strict"]

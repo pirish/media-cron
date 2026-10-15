@@ -1116,8 +1116,38 @@ class Pipeline:
                             seeding_paths = set()
                             if torrent_plugin and torrent_plugin.processed_torrents:
                                 for t in torrent_plugin.processed_torrents:
+                                    if hasattr(t, "content_path") and t.content_path:
+                                        try:
+                                            content_p = torrent_plugin.config.translate_path(
+                                                t.content_path
+                                            )
+                                            seeding_paths.add(content_p.resolve())
+                                        except Exception:
+                                            pass
+                                    if hasattr(t, "save_path") and t.save_path:
+                                        try:
+                                            save_p = torrent_plugin.config.translate_path(
+                                                t.save_path
+                                            )
+                                            if hasattr(t, "name") and t.name:
+                                                seeding_paths.add((save_p / t.name).resolve())
+                                        except Exception:
+                                            pass
                                     for tf in getattr(t, "files", []):
-                                        seeding_paths.add(Path(tf).resolve())
+                                        try:
+                                            rel_name = tf.name if hasattr(tf, "name") else str(tf)
+                                            fp = Path(rel_name)
+                                            if fp.is_absolute():
+                                                seeding_paths.add(fp.resolve())
+                                            elif hasattr(t, "save_path") and t.save_path:
+                                                save_p = torrent_plugin.config.translate_path(
+                                                    t.save_path
+                                                )
+                                                seeding_paths.add((save_p / fp).resolve())
+                                            else:
+                                                seeding_paths.add(fp.resolve())
+                                        except Exception:
+                                            pass
 
                             try:
                                 review_mgr.stage_unrecognized(

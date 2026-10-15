@@ -1,4 +1,8 @@
+import os
+from pathlib import Path
+
 from media_cron.torrent.models import (
+    TorrentFile,
     TorrentFilterConfig,
     TorrentItem,
     TorrentState,
@@ -95,3 +99,11 @@ def test_torrent_filter_config_matching():
         tags=["media"],
     )
     assert filter_cfg.matches(wrong_cat) is False
+
+
+def test_torrent_file_pathlike():
+    tf = TorrentFile(name="Movie.2024.mkv", size=1024)
+    assert isinstance(tf, os.PathLike)
+    assert Path(tf) == Path("Movie.2024.mkv")
+    assert os.fspath(tf) == "Movie.2024.mkv"
+    assert str(tf) == "Movie.2024.mkv"

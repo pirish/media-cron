@@ -19,6 +19,12 @@ class TorrentFile:
     size: int
     progress: float = 1.0
 
+    def __fspath__(self) -> str:
+        return self.name
+
+    def __str__(self) -> str:
+        return self.name
+
 
 @dataclass
 class TorrentItem:
