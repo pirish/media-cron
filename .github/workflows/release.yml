@@ -2,8 +2,11 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -36,9 +39,39 @@ jobs:
       - name: Run Test Suite
         run: pytest
 
+  create-release:
+    name: Determine Semantic Version & Create Release
+    needs: test-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.semver.outputs.tag }}
+      version: ${{ steps.semver.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Calculate Semantic Version and Create Release
+        id: semver
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 .github/scripts/semantic_release.py
+
   publish-container:
     name: Build & Publish Multi-Arch Container Image
-    needs: test-gate
+    needs: [test-gate, create-release]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -63,9 +96,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ needs.create-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.create-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.create-release.outputs.tag }}
             type=raw,value=latest
 
       - name: Build and push multi-architecture image
@@ -79,7 +112,7 @@ jobs:
 
   publish-helm:
     name: Package & Publish Helm Chart (OCI)
-    needs: test-gate
+    needs: [test-gate, create-release]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -90,8 +123,7 @@ jobs:
 
       - name: Package Helm chart
         run: |
-          RAW_TAG="${{ github.ref_name }}"
-          VERSION="${RAW_TAG#v}"
+          VERSION="${{ needs.create-release.outputs.version }}"
           mkdir -p dist/charts
           helm package charts/media-cron --version "${VERSION}" --app-version "${VERSION}" -d dist/charts
           echo "PACKAGED_VERSION=${VERSION}" >> $GITHUB_ENV
@@ -109,7 +141,7 @@ jobs:
 
   publish-python:
     name: Build & Upload Python Distribution Packages
-    needs: test-gate
+    needs: [test-gate, create-release]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -135,4 +167,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" dist/*.tar.gz dist/*.whl --clobber
+          gh release upload "${{ needs.create-release.outputs.tag }}" dist/*.tar.gz dist/*.whl --clobber

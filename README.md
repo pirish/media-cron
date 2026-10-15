@@ -1,5 +1,9 @@
 # Media-Cron
 
+[![CI](https://github.com/pirish/media-cron/actions/workflows/ci.yml/badge.svg)](https://github.com/pirish/media-cron/actions/workflows/ci.yml)
+[![Release](https://github.com/pirish/media-cron/actions/workflows/release.yml/badge.svg)](https://github.com/pirish/media-cron/actions/workflows/release.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/pirish/media-cron)](https://github.com/pirish/media-cron/releases)
+
 **Media-Cron** is a modular, library-first Python CLI tool designed to automate post-download cleanup, media sanitization, container integrity verification, per-media routing, and automated library organization across video, audio, and literature.
 
 ---

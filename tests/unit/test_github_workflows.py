@@ -4,9 +4,12 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOWS_DIR = Path(__file__).resolve().parent.parent.parent / ".github" / "workflows"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 CI_WORKFLOW = WORKFLOWS_DIR / "ci.yml"
 RELEASE_WORKFLOW = WORKFLOWS_DIR / "release.yml"
+CODEOWNERS_FILE = REPO_ROOT / ".github" / "CODEOWNERS"
+README_FILE = REPO_ROOT / "README.md"
 
 
 def load_yaml(path: Path) -> dict:
@@ -18,7 +21,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def test_ci_workflow_structure_and_triggers():
-    """Verify ci.yml triggers on main PRs/pushes and has read-only permissions."""
+    """Verify ci.yml triggers on main PRs (including opening) and pushes, with read-only permissions."""
     ci = load_yaml(CI_WORKFLOW)
     assert ci.get("name") is not None
 
@@ -26,7 +29,14 @@ def test_ci_workflow_structure_and_triggers():
     triggers = ci.get("on") or ci.get(True)  # yaml can parse 'on' as boolean True
     assert triggers is not None
     assert "pull_request" in triggers or True in triggers
+    pr_config = triggers.get("pull_request", {})
+    if isinstance(pr_config, dict) and "types" in pr_config:
+        assert "opened" in pr_config["types"]
+
     assert "push" in triggers
+    push_config = triggers.get("push", {})
+    if isinstance(push_config, dict) and "branches" in push_config:
+        assert "main" in push_config["branches"]
 
     # Permissions
     permissions = ci.get("permissions", {})
@@ -54,7 +64,7 @@ def test_ci_workflow_jobs():
 
 
 def test_release_workflow_triggers_and_permissions():
-    """Verify release.yml triggers on version tags with write permissions."""
+    """Verify release.yml triggers on main push and version tags with write permissions."""
     rel = load_yaml(RELEASE_WORKFLOW)
     assert rel.get("name") is not None
 
@@ -64,6 +74,8 @@ def test_release_workflow_triggers_and_permissions():
     push_trigger = triggers.get("push", {})
     tags = push_trigger.get("tags", [])
     assert any("v*" in tag for tag in tags)
+    branches = push_trigger.get("branches", [])
+    assert "main" in branches
 
     # Permissions
     permissions = rel.get("permissions", {})
@@ -72,12 +84,18 @@ def test_release_workflow_triggers_and_permissions():
 
 
 def test_release_workflow_jobs_and_dependencies():
-    """Verify release.yml contains test-gate, container, helm, and python jobs."""
+    """Verify release.yml contains test-gate, create-release, container, helm, and python jobs."""
     rel = load_yaml(RELEASE_WORKFLOW)
     jobs = rel.get("jobs", {})
 
     # Gating job
     assert "test-gate" in jobs
+
+    # Release creation / semver calculation job
+    assert "create-release" in jobs
+    assert jobs["create-release"].get("needs") == "test-gate" or "test-gate" in jobs[
+        "create-release"
+    ].get("needs", [])
 
     # Publishing targets
     assert "publish-container" in jobs
@@ -90,3 +108,26 @@ def test_release_workflow_jobs_and_dependencies():
         if isinstance(needs, str):
             needs = [needs]
         assert "test-gate" in needs, f"{target} must depend on test-gate"
+        assert "create-release" in needs, f"{target} must depend on create-release"
+
+
+def test_codeowners_file():
+    """Verify .github/CODEOWNERS exists and assigns default repository ownership to @pirish."""
+    assert CODEOWNERS_FILE.exists(), f"CODEOWNERS file does not exist at {CODEOWNERS_FILE}"
+    content = CODEOWNERS_FILE.read_text(encoding="utf-8")
+    lines = [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert any("* @pirish" in line for line in lines), "CODEOWNERS must assign * to @pirish"
+
+
+def test_readme_status_badges():
+    """Verify README.md contains build status badges at the top."""
+    assert README_FILE.exists(), "README.md does not exist"
+    content = README_FILE.read_text(encoding="utf-8")
+    first_section = "\n".join(content.splitlines()[:15])
+
+    assert "actions/workflows/ci.yml/badge.svg" in first_section
+    assert "actions/workflows/release.yml/badge.svg" in first_section

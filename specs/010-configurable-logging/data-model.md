@@ -13,6 +13,7 @@ Represents the severity filtering threshold for log events.
 from enum import Enum
 import logging
 
+
 class LogLevel(str, Enum):
     DEBUG = "debug"
     INFO = "info"
@@ -22,10 +23,10 @@ class LogLevel(str, Enum):
     @property
     def python_level(self) -> int:
         mapping = {
-            LogLevel.DEBUG: logging.DEBUG,      # 10
-            LogLevel.INFO: logging.INFO,        # 20
+            LogLevel.DEBUG: logging.DEBUG,  # 10
+            LogLevel.INFO: logging.INFO,  # 20
             LogLevel.WARNING: logging.WARNING,  # 30
-            LogLevel.ERROR: logging.ERROR,      # 40
+            LogLevel.ERROR: logging.ERROR,  # 40
         }
         return mapping[self]
 
@@ -50,8 +51,8 @@ Represents the target sink(s) for emitted log events.
 ```python
 class LogDestination(str, Enum):
     CONSOLE = "console"  # Standard error stream (stderr)
-    FILE = "file"        # Persistent file on disk (console silenced)
-    BOTH = "both"        # Dual emission to both file and stderr
+    FILE = "file"  # Persistent file on disk (console silenced)
+    BOTH = "both"  # Dual emission to both file and stderr
 
     @classmethod
     def from_str(cls, val: str) -> "LogDestination":
@@ -59,9 +60,7 @@ class LogDestination(str, Enum):
         try:
             return cls(normalized)
         except ValueError:
-            raise ValueError(
-                f"Invalid log destination '{val}'. Allowed: {', '.join(cls.values())}"
-            )
+            raise ValueError(f"Invalid log destination '{val}'. Allowed: {', '.join(cls.values())}")
 
     @classmethod
     def values(cls) -> list[str]:
@@ -82,9 +81,7 @@ class LogFormat(str, Enum):
         try:
             return cls(normalized)
         except ValueError:
-            raise ValueError(
-                f"Invalid log format '{val}'. Allowed: {', '.join(cls.values())}"
-            )
+            raise ValueError(f"Invalid log format '{val}'. Allowed: {', '.join(cls.values())}")
 
     @classmethod
     def values(cls) -> list[str]:
@@ -117,6 +114,7 @@ Declared inside `MediaCronConfig` to control the global logging engine.
 ```python
 from dataclasses import dataclass, field
 from pathlib import Path
+
 
 @dataclass
 class LoggingConfig:

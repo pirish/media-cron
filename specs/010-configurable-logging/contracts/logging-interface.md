@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 from pathlib import Path
 from media_cron.logging.models import LoggingConfig
 
+
 @runtime_checkable
 class LoggingEngineProtocol(Protocol):
     """Core protocol for configuring and managing application-wide logging."""
@@ -43,6 +44,7 @@ Contract for formatting individual `logging.LogRecord` instances into strings.
 import logging
 from typing import Protocol, runtime_checkable
 
+
 @runtime_checkable
 class LogFormatterProtocol(Protocol):
     """Protocol for transforming LogRecord instances into serialized output."""
@@ -58,6 +60,7 @@ Contract for intercepting and redacting sensitive credentials before record emis
 ```python
 import logging
 from typing import Protocol, runtime_checkable
+
 
 @runtime_checkable
 class SensitiveDataSanitizerProtocol(Protocol):
