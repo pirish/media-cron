@@ -121,6 +121,14 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Update Helm Chart appVersion
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          echo "Updating Helm chart appVersion to ${VERSION}..."
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/media-cron/Chart.yaml
+          sed -i "s/^version:.*/version: ${VERSION}/" charts/media-cron/Chart.yaml
+          git diff charts/media-cron/Chart.yaml
+
       - name: Package Helm chart
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"

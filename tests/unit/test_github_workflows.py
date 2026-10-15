@@ -131,3 +131,15 @@ def test_readme_status_badges():
 
     assert "actions/workflows/ci.yml/badge.svg" in first_section
     assert "actions/workflows/release.yml/badge.svg" in first_section
+
+
+def test_release_workflow_updates_helm_app_version():
+    """Verify release.yml updates appVersion in Helm chart before packaging."""
+    rel = load_yaml(RELEASE_WORKFLOW)
+    publish_helm = rel.get("jobs", {}).get("publish-helm", {})
+    steps = publish_helm.get("steps", [])
+
+    app_version_steps = [
+        s for s in steps if "appVersion" in s.get("name", "") or "appVersion" in s.get("run", "")
+    ]
+    assert app_version_steps, "publish-helm must contain a step updating appVersion in Chart.yaml"

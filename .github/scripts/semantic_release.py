@@ -184,6 +184,25 @@ def write_github_outputs(tag: str, version: str, output_file: str | None = None)
         f.write(f"new_version={version}\n")
 
 
+def update_chart_app_version(version: str, cwd: Path | None = None) -> tuple[bool, Path]:
+    """Update appVersion and version in charts/media-cron/Chart.yaml if present."""
+    root = cwd or Path(".")
+    chart_file = root / "charts" / "media-cron" / "Chart.yaml"
+    if not chart_file.exists():
+        return False, chart_file
+
+    content = chart_file.read_text(encoding="utf-8")
+    updated = re.sub(
+        r"^(appVersion:\s*).*$", f'appVersion: "{version}"', content, flags=re.MULTILINE
+    )
+    updated = re.sub(r"^(version:\s*).*$", f"version: {version}", updated, flags=re.MULTILINE)
+
+    if updated != content:
+        chart_file.write_text(updated, encoding="utf-8")
+        return True, chart_file
+    return False, chart_file
+
+
 def create_git_tag(tag: str, message: str, cwd: Path | None = None) -> None:
     """Create annotated git tag and push to origin."""
     name_check = run_cmd(["git", "config", "user.name"], cwd=cwd, check=False)
@@ -356,6 +375,29 @@ def main() -> int:
         return 0
 
     if bump != "none":
+        modified, chart_path = update_chart_app_version(version)
+        if modified:
+            print(f"Updated {chart_path} appVersion to {version}")
+            name_check = run_cmd(["git", "config", "user.name"], check=False)
+            if name_check.returncode != 0 or not name_check.stdout.strip():
+                run_cmd(["git", "config", "user.name", "github-actions[bot]"], check=True)
+                run_cmd(
+                    ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
+                    check=True,
+                )
+            run_cmd(["git", "add", str(chart_path)], check=True)
+            commit_res = run_cmd(
+                [
+                    "git",
+                    "commit",
+                    "-m",
+                    f"chore(chart): update appVersion to {version} [skip ci]",
+                ],
+                check=False,
+            )
+            if commit_res.returncode == 0:
+                run_cmd(["git", "push", "origin", "main"], check=False)
+
         create_git_tag(tag, f"Release {tag}")
 
     create_github_release(

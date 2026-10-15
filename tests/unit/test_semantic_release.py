@@ -103,3 +103,29 @@ def test_write_github_outputs(tmp_path: Path):
     assert "version=1.2.3\n" in content
     assert "new_tag=v1.2.3\n" in content
     assert "new_version=1.2.3\n" in content
+
+
+def test_update_chart_app_version(tmp_path: Path):
+    chart_dir = tmp_path / "charts" / "media-cron"
+    chart_dir.mkdir(parents=True)
+    chart_file = chart_dir / "Chart.yaml"
+    chart_file.write_text(
+        """apiVersion: v2
+name: media-cron
+version: 0.1.1
+appVersion: "0.1.1"
+""",
+        encoding="utf-8",
+    )
+
+    modified, path = semver_mod.update_chart_app_version("0.2.0", cwd=tmp_path)
+    assert modified is True
+    assert path == chart_file
+
+    updated = chart_file.read_text(encoding="utf-8")
+    assert 'appVersion: "0.2.0"' in updated
+    assert "version: 0.2.0" in updated
+
+    # Calling again with same version should return False (no modification)
+    modified_again, _ = semver_mod.update_chart_app_version("0.2.0", cwd=tmp_path)
+    assert modified_again is False
