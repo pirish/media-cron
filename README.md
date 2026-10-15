@@ -23,6 +23,7 @@
 - **Seeding Directory Relocation**: Relocates original files to an optional `seed_dir` with original filenames preserved for continuous torrent seeding while hardlinking organized files into your media libraries.
 - **Clutter Purging**: Prunes junk files (`.nfo`, `.txt`, `.url`, `.sfv`, `.exe`, `.website`, etc.) and sample clips under 50 MB, followed by empty parent directory cleanup.
 - **Container Integrity Verification**: Inspects Matroska EBML, MP4 atoms, audio magic bytes, and e-book archives, preventing corrupt or truncated downloads from contaminating libraries.
+- **Fast Failure Recovery & Transfer Resumption**: Automatically checks non-empty staging and destination directories against active queue items. Employs size-first rejection and streaming SHA-256 integrity verification to resume existing matching files without re-copying, bypasses redundant destination writes while triggering post-transfer hooks (torrent seed relocation, move-mode source cleanup), and safely purges corrupted or truncated artifacts within bounded directory roots.
 - **Concurrency Protection**: Non-blocking staging lockfile (`.media-cron.lock`) protects automated cron jobs from concurrent execution conflicts.
 - **Dry-Run Simulation**: 100% predictive `--dry-run` simulation mode with zero filesystem writes.
 - **Dual Output Streams**: Clean human-readable text logs or structured JSON for automated script integration.

@@ -33,6 +33,7 @@ from media_cron.plugins.input.directory import DirectoryScannerInput
 from media_cron.plugins.input.torrent import TorrentInputPlugin
 from media_cron.plugins.output.torrent_seed import TorrentClientSeedOutput
 from media_cron.plugins.registry import PluginRegistry, default_registry
+from media_cron.recovery.verifier import TransferVerifier
 from media_cron.routing.engine import MediaRoutingEngine
 from media_cron.routing.models import (
     CATEGORY_TO_MEDIA_TYPE,
@@ -54,12 +55,14 @@ class Pipeline:
         config: MediaCronConfig,
         registry: PluginRegistry | None = None,
         target_torrent_identifier: str | None = None,
+        verifier: TransferVerifier | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or default_registry
         self.target_torrent_identifier = target_torrent_identifier
+        self.verifier = verifier if verifier is not None else TransferVerifier()
         self.route_resolver = RouteResolver()
-        self.routing_engine = MediaRoutingEngine(self.config)
+        self.routing_engine = MediaRoutingEngine(self.config, verifier=self.verifier)
         self.resolved_routes = self.route_resolver.resolve_all_routes(self.config)
 
         # Wire route spool destinations to video / music configs if configured
@@ -107,11 +110,14 @@ class Pipeline:
                 client=client,
                 config=client_cfg,
                 target_identifier=self.target_torrent_identifier,
+                verifier=self.verifier,
             )
             plugins.append(torrent_plugin)
 
         if self.config.hybrid_ingest or not self.config.active_torrent_client:
             dir_plugin = self.registry.get_input("directory_scanner")
+            if hasattr(dir_plugin, "verifier"):
+                dir_plugin.verifier = self.verifier
             if self.config.hybrid_ingest:
                 plugins.insert(0, dir_plugin)
             else:
@@ -300,7 +306,7 @@ class Pipeline:
 
         # 2. Discover items from global source or staging
         if source_path is not None and source_path.resolve() == staging_path.resolve():
-            scanner = DirectoryScannerInput()
+            scanner = DirectoryScannerInput(verifier=self.verifier)
             for item in scanner.discover(staging_path, staging_path, dry_run=True):
                 resolved = item.source_path.resolve()
                 if resolved not in seen_paths:
@@ -873,11 +879,12 @@ class Pipeline:
 
         return routing_summary
 
-    def run(self) -> BatchSummary:
+    def run(self, dry_run: bool | None = None) -> BatchSummary:
         """Executes the pipeline according to active configuration."""
         started_at = datetime.now(UTC)
         batch_id = uuid.uuid4()
-        dry_run = self.config.general.dry_run
+        if dry_run is None:
+            dry_run = self.config.general.dry_run
 
         logger.info(
             "Initializing media organization pipeline (batch_id=%s, dry_run=%s)",
@@ -994,6 +1001,7 @@ class Pipeline:
                 music_summary=self._last_music_summary,
                 video_summary=self._get_video_summary(),
                 routing_summary=routing_summary,
+                recovery_summary=self.verifier.summary,
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -1022,6 +1030,9 @@ class Pipeline:
                 # 2. Generate and execute plans
                 plans, _, _ = self.plan(staging_dir, staging_dir)
                 outputs = self.registry.get_outputs(self.config.plugins.outputs)
+                for out in outputs:
+                    if hasattr(out, "verifier"):
+                        out.verifier = self.verifier
 
                 results: list[OperationResult] = []
                 errors: list[str] = []
@@ -1032,7 +1043,7 @@ class Pipeline:
                 error_count = 0
                 review_staged_count = 0
                 if is_video_spool:
-                    spool_engine = VideoSpoolEngine()
+                    spool_engine = VideoSpoolEngine(verifier=self.verifier)
                     aggregator = VideoReleaseBundleAggregator(
                         sample_size_threshold_mb=self.config.general.sample_size_threshold_mb
                     )
@@ -1372,6 +1383,7 @@ class Pipeline:
                     music_summary=self._last_music_summary,
                     video_summary=self._get_video_summary(),
                     routing_summary=routing_summary,
+                    recovery_summary=self.verifier.summary,
                 )
         except LockContentionError as e:
             return BatchSummary(

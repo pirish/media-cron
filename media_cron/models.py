@@ -5,6 +5,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from media_cron.recovery.models import RecoverySummary
+
 # Exit code constants
 EXIT_SUCCESS = 0
 EXIT_PARTIAL_OR_LOCKED = 1
@@ -135,6 +137,7 @@ class BatchSummary:
     unrecognized_count: int = 0
     review_staged_count: int = 0
     routing_summary: dict[str, Any] = field(default_factory=dict)
+    recovery_summary: RecoverySummary | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -166,6 +169,8 @@ class BatchSummary:
             ],
             "errors": self.errors,
         }
+        if self.recovery_summary is not None:
+            data["recovery"] = self.recovery_summary.to_dict()
         if self.torrent_summary is not None:
             data["torrent_summary"] = self.torrent_summary
         if self.audiobook_summary is not None:

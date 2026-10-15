@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -7,10 +8,16 @@ import uuid
 from pathlib import Path
 
 from media_cron.metadata.models import VideoReleaseBundle, VideoSpoolResult
+from media_cron.recovery.verifier import TransferVerifier
+
+logger = logging.getLogger(__name__)
 
 
 class VideoSpoolEngine:
     """Deposits video release bundles atomically into external video manager drop folders."""
+
+    def __init__(self, verifier: TransferVerifier | None = None) -> None:
+        self.verifier = verifier if verifier is not None else TransferVerifier()
 
     def stage_bundle(
         self,
@@ -128,18 +135,46 @@ class VideoSpoolEngine:
         )
 
         if target_dir.exists():
-            return VideoSpoolResult(
-                bundle_id=bundle.bundle_id,
-                source_dir=bundle.root_path,
-                target_dir=target_dir,
-                file_count=file_count,
-                bytes_transferred=0,
-                mode="skipped",
-                success=True,
-                skipped=True,
-                skip_reason=f"Target directory '{target_dir.name}' already exists in spool folder",
-                post_command_executed=False,
-            )
+            verify_res = self.verifier.verify_item(bundle.root_path, target_dir)
+            if verify_res.can_resume:
+                logger.info(
+                    "Spool target '%s' verified matching; bypassing transfer (%d bytes saved)",
+                    target_dir.name,
+                    verify_res.bytes_saved,
+                )
+                self.verifier.summary.transfers_bypassed += 1
+                self.verifier.summary.bytes_saved += verify_res.bytes_saved
+                post_executed = False
+                post_exit_code: int | None = None
+                if post_command and not dry_run:
+                    post_exit_code, _ = self.execute_post_command(post_command, target_dir)
+                    post_executed = True
+
+                return VideoSpoolResult(
+                    bundle_id=bundle.bundle_id,
+                    source_dir=bundle.root_path,
+                    target_dir=target_dir,
+                    file_count=file_count,
+                    bytes_transferred=0,
+                    mode="bypassed",
+                    success=True,
+                    skipped=False,
+                    post_command_executed=post_executed,
+                    post_command_exit_code=post_exit_code,
+                )
+            else:
+                return VideoSpoolResult(
+                    bundle_id=bundle.bundle_id,
+                    source_dir=bundle.root_path,
+                    target_dir=target_dir,
+                    file_count=file_count,
+                    bytes_transferred=0,
+                    mode="skipped",
+                    success=True,
+                    skipped=True,
+                    skip_reason=f"Target directory '{target_dir.name}' already exists in spool folder",
+                    post_command_executed=False,
+                )
 
         if dry_run:
             return VideoSpoolResult(

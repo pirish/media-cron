@@ -43,6 +43,19 @@ def version() -> None:
     typer.echo("media-cron v0.1.0")
 
 
+def format_bytes(num_bytes: int) -> str:
+    """Format bytes into human-readable string."""
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    value = float(num_bytes)
+    for unit in units:
+        if abs(value) < 1024.0 or unit == "PB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{value:.2f} PB"
+
+
 def render_text_summary(summary: BatchSummary) -> str:
     lines = [
         "=== Media-Cron Batch Summary ===",
@@ -58,6 +71,24 @@ def render_text_summary(summary: BatchSummary) -> str:
         f"Errors:   {summary.error_count}",
         f"Exit Code: {summary.exit_code}",
     ]
+    if summary.recovery_summary and (
+        summary.recovery_summary.items_scanned > 0
+        or summary.recovery_summary.items_resumed > 0
+        or summary.recovery_summary.transfers_bypassed > 0
+        or summary.recovery_summary.items_purged > 0
+        or summary.recovery_summary.bytes_saved > 0
+    ):
+        rec = summary.recovery_summary
+        lines.extend(
+            [
+                "--- Fast Recovery Telemetry ---",
+                f"Candidates Inspected: {rec.items_scanned}",
+                f"Staged Resumed:       {rec.items_resumed} (re-copy avoided)",
+                f"Destination Bypassed: {rec.transfers_bypassed} (redundant transfer skipped)",
+                f"Corrupt Purged:       {rec.items_purged} (cleaned and restarted)",
+                f"Data Transfer Saved:  {format_bytes(rec.bytes_saved)}",
+            ]
+        )
     if summary.torrent_summary:
         ts = summary.torrent_summary
         lines.extend(

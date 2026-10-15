@@ -20,8 +20,13 @@ if TYPE_CHECKING:
 class MediaRoutingEngine(MediaRoutingEngineProtocol):
     """Coordinates intake, filtering, and target resolution across media routes."""
 
-    def __init__(self, config: "MediaCronConfig | None" = None):
+    def __init__(
+        self,
+        config: "MediaCronConfig | None" = None,
+        verifier: object | None = None,
+    ):
         self.config = config
+        self.verifier = verifier
 
     def discover_route_items(
         self,
@@ -43,7 +48,7 @@ class MediaRoutingEngine(MediaRoutingEngineProtocol):
 
             if src.type == SourceEndpointType.DIRECTORY:
                 if src.path and src.path.exists():
-                    scanner = DirectoryScannerInput()
+                    scanner = DirectoryScannerInput(verifier=self.verifier)
                     for item in scanner.discover(src.path, staging_dir, dry_run=dry_run):
                         resolved = item.source_path.resolve()
                         if resolved not in seen_paths:

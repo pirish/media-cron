@@ -7,6 +7,7 @@ from pathlib import Path
 from media_cron.models import DiscoveredItem
 from media_cron.plugins.base import InputPlugin
 from media_cron.plugins.registry import default_registry
+from media_cron.recovery.verifier import TransferVerifier
 from media_cron.torrent.base import TorrentClientProtocol, TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig, TorrentItem
 
@@ -21,6 +22,7 @@ class TorrentInputPlugin(InputPlugin):
         client: TorrentClientProtocol | None = None,
         config: TorrentClientConfig | None = None,
         target_identifier: str | None = None,
+        verifier: TransferVerifier | None = None,
     ):
         self.config = config or TorrentClientConfig()
         if client:
@@ -28,6 +30,7 @@ class TorrentInputPlugin(InputPlugin):
         else:
             self.client = TorrentClientRegistry.create_client(self.config)
         self.target_identifier = target_identifier
+        self.verifier = verifier if verifier is not None else TransferVerifier()
         self.processed_torrents: list[TorrentItem] = []
 
     @property
@@ -95,7 +98,28 @@ class TorrentInputPlugin(InputPlugin):
             is_dir = local_path.is_dir()
             mtime = local_path.stat().st_mtime if local_path.exists() else time.time()
 
+            staging_dest = staging_path / torrent.name
+
             if dry_run:
+                if staging_dest.exists():
+                    verify_res = self.verifier.verify_item(
+                        source_path=local_path, target_path=staging_dest
+                    )
+                    if verify_res.can_resume:
+                        logger.info(
+                            "[DRY-RUN] Staged item '%s' matches source (%d bytes saved)",
+                            torrent.name,
+                            verify_res.bytes_saved,
+                        )
+                        self.verifier.summary.items_resumed += 1
+                        self.verifier.summary.bytes_saved += verify_res.bytes_saved
+                    else:
+                        logger.warning(
+                            "[DRY-RUN] Staged item '%s' corrupted (%s); would purge and restart",
+                            torrent.name,
+                            verify_res.overall_status.value,
+                        )
+                        self.verifier.summary.items_purged += 1
                 logger.info("[DRY-RUN] Discovered torrent payload: %s", local_path)
                 yield DiscoveredItem(
                     source_path=local_path,
@@ -107,7 +131,36 @@ class TorrentInputPlugin(InputPlugin):
 
             # Live copy into staging
             staging_path.mkdir(parents=True, exist_ok=True)
-            staging_dest = staging_path / torrent.name
+
+            if staging_dest.exists():
+                verify_res = self.verifier.verify_item(
+                    source_path=local_path, target_path=staging_dest
+                )
+                if verify_res.can_resume:
+                    logger.info(
+                        "Staged item '%s' verified matching; resuming without re-copying (%d bytes saved)",
+                        torrent.name,
+                        verify_res.bytes_saved,
+                    )
+                    self.verifier.summary.items_resumed += 1
+                    self.verifier.summary.bytes_saved += verify_res.bytes_saved
+                    yield DiscoveredItem(
+                        source_path=staging_dest,
+                        file_size=torrent.total_size,
+                        modified_time=mtime,
+                        is_directory=is_dir,
+                    )
+                    continue
+                else:
+                    logger.warning(
+                        "Corrupted staged candidate '%s' detected (%s); purging and restarting",
+                        torrent.name,
+                        verify_res.overall_status.value,
+                    )
+                    self.verifier.purge_item(
+                        staging_dest, allowed_parent_roots=[staging_path], dry_run=False
+                    )
+                    self.verifier.summary.items_purged += 1
 
             try:
                 if is_dir:
