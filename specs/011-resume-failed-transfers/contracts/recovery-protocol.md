@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 from media_cron.recovery.models import VerificationResult, VerificationStatus, RecoverySummary
 
+
 @runtime_checkable
 class TransferVerifierProtocol(Protocol):
     """Contract for verifying candidate file integrity and performing safe restarts."""
@@ -132,7 +133,9 @@ if dest.exists():
             message=f"Destination file already matches source content hash; transfer bypassed ({result.bytes_saved} bytes saved)",
         )
     else:
-        logger.warning("Corrupt destination file '%s' detected; purging before fresh transfer", dest)
+        logger.warning(
+            "Corrupt destination file '%s' detected; purging before fresh transfer", dest
+        )
         verifier.purge_item(dest, allowed_parent_roots=[dest.parent], dry_run=plan.dry_run)
         verifier.summary.items_purged += 1
 
