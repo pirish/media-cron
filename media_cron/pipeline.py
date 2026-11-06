@@ -43,6 +43,8 @@ from media_cron.routing.models import (
 from media_cron.routing.resolver import RouteResolver
 from media_cron.torrent.base import TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig
+from media_cron.transfer.executor import FileTransferExecutor
+from media_cron.transfer.models import TransferConfig
 
 logger = logging.getLogger("media_cron.pipeline")
 
@@ -56,13 +58,23 @@ class Pipeline:
         registry: PluginRegistry | None = None,
         target_torrent_identifier: str | None = None,
         verifier: TransferVerifier | None = None,
+        transfer_executor: FileTransferExecutor | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or default_registry
         self.target_torrent_identifier = target_torrent_identifier
         self.verifier = verifier if verifier is not None else TransferVerifier()
+        self.transfer_executor = (
+            transfer_executor
+            if transfer_executor is not None
+            else FileTransferExecutor(getattr(config, "transfer", None) or TransferConfig())
+        )
         self.route_resolver = RouteResolver()
-        self.routing_engine = MediaRoutingEngine(self.config, verifier=self.verifier)
+        self.routing_engine = MediaRoutingEngine(
+            self.config,
+            verifier=self.verifier,
+            transfer_executor=self.transfer_executor,
+        )
         self.resolved_routes = self.route_resolver.resolve_all_routes(self.config)
 
         # Wire route spool destinations to video / music configs if configured
@@ -111,6 +123,7 @@ class Pipeline:
                 config=client_cfg,
                 target_identifier=self.target_torrent_identifier,
                 verifier=self.verifier,
+                transfer_executor=self.transfer_executor,
             )
             plugins.append(torrent_plugin)
 
@@ -118,6 +131,8 @@ class Pipeline:
             dir_plugin = self.registry.get_input("directory_scanner")
             if hasattr(dir_plugin, "verifier"):
                 dir_plugin.verifier = self.verifier
+            if hasattr(dir_plugin, "transfer_executor"):
+                dir_plugin.transfer_executor = self.transfer_executor
             if self.config.hybrid_ingest:
                 plugins.insert(0, dir_plugin)
             else:
@@ -306,7 +321,10 @@ class Pipeline:
 
         # 2. Discover items from global source or staging
         if source_path is not None and source_path.resolve() == staging_path.resolve():
-            scanner = DirectoryScannerInput(verifier=self.verifier)
+            scanner = DirectoryScannerInput(
+                verifier=self.verifier,
+                transfer_executor=self.transfer_executor,
+            )
             for item in scanner.discover(staging_path, staging_path, dry_run=True):
                 resolved = item.source_path.resolve()
                 if resolved not in seen_paths:
@@ -574,11 +592,14 @@ class Pipeline:
 
                     media_type = CATEGORY_TO_MEDIA_TYPE.get(asset.category)
                     target_mode = mode
+                    route_transfer_override = None
                     if media_type and media_type in self.resolved_routes:
                         route = self.resolved_routes[media_type]
                         if not self.route_resolver.validate_mount_safety(route):
                             continue
                         target_mode = route.transfer_mode
+                        if route.destination_endpoint:
+                            route_transfer_override = route.destination_endpoint.transfer
 
                     dest_path = self._resolve_destination_path(asset)
                     plans.append(
@@ -589,6 +610,7 @@ class Pipeline:
                             destination_path=dest_path,
                             reason=f"Identified as {asset.category.value}: '{asset.clean_title}'",
                             dry_run=True,
+                            transfer_config_override=route_transfer_override,
                         )
                     )
 
@@ -610,6 +632,7 @@ class Pipeline:
                                 destination_path=dest_sub,
                                 reason=f"Preserved associated subtitle for '{asset.clean_title}'",
                                 dry_run=True,
+                                transfer_config_override=route_transfer_override,
                             )
                         )
                         planned_subtitle_paths.add(sub_resolved)
@@ -1002,6 +1025,7 @@ class Pipeline:
                 video_summary=self._get_video_summary(),
                 routing_summary=routing_summary,
                 recovery_summary=self.verifier.summary,
+                transfer_summary=self.transfer_executor.get_summary(),
             )
 
         # Live Execution: Acquire lockfile in staging_dir
@@ -1033,6 +1057,8 @@ class Pipeline:
                 for out in outputs:
                     if hasattr(out, "verifier"):
                         out.verifier = self.verifier
+                    if hasattr(out, "transfer_executor"):
+                        out.transfer_executor = self.transfer_executor
 
                 results: list[OperationResult] = []
                 errors: list[str] = []
@@ -1043,7 +1069,10 @@ class Pipeline:
                 error_count = 0
                 review_staged_count = 0
                 if is_video_spool:
-                    spool_engine = VideoSpoolEngine(verifier=self.verifier)
+                    spool_engine = VideoSpoolEngine(
+                        verifier=self.verifier,
+                        transfer_executor=self.transfer_executor,
+                    )
                     aggregator = VideoReleaseBundleAggregator(
                         sample_size_threshold_mb=self.config.general.sample_size_threshold_mb
                     )
@@ -1121,7 +1150,10 @@ class Pipeline:
                         if self.config.paths.review_dir:
                             from media_cron.review.manager import ReviewManager
 
-                            review_mgr = ReviewManager(self.config.paths.review_dir)
+                            review_mgr = ReviewManager(
+                                self.config.paths.review_dir,
+                                transfer_executor=self.transfer_executor,
+                            )
                             source_paths = getattr(plan, "unrecognized_files", [plan.source_path])
 
                             seeding_paths = set()
@@ -1384,6 +1416,7 @@ class Pipeline:
                     video_summary=self._get_video_summary(),
                     routing_summary=routing_summary,
                     recovery_summary=self.verifier.summary,
+                    transfer_summary=self.transfer_executor.get_summary(),
                 )
         except LockContentionError as e:
             return BatchSummary(

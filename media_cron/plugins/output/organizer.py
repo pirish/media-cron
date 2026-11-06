@@ -14,6 +14,7 @@ from media_cron.models import (
 from media_cron.plugins.base import OutputPlugin
 from media_cron.plugins.registry import default_registry
 from media_cron.recovery.verifier import TransferVerifier
+from media_cron.transfer.executor import FileTransferExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,15 @@ RES_RANK = {
 class LibraryOrganizerOutput(OutputPlugin):
     """Transfers media assets to structured destination libraries with quality collision checks."""
 
-    def __init__(self, verifier: TransferVerifier | None = None) -> None:
+    def __init__(
+        self,
+        verifier: TransferVerifier | None = None,
+        transfer_executor: FileTransferExecutor | None = None,
+    ) -> None:
         self.verifier = verifier if verifier is not None else TransferVerifier()
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
 
     @property
     def plugin_name(self) -> str:
@@ -237,6 +245,7 @@ class LibraryOrganizerOutput(OutputPlugin):
 
         # 2. Execute transfer
         dest.parent.mkdir(parents=True, exist_ok=True)
+        override_cfg = getattr(plan, "transfer_config_override", None)
         try:
             if plan.transfer_mode == TransferMode.HARDLINK:
                 try:
@@ -244,13 +253,13 @@ class LibraryOrganizerOutput(OutputPlugin):
                 except OSError as err:
                     # Fallback to copy if cross-device
                     if err.errno == 18:  # EXDEV
-                        shutil.copy2(src, dest)
+                        self.transfer_executor.copy(src, dest, override_config=override_cfg)
                     else:
                         raise
             elif plan.transfer_mode == TransferMode.MOVE:
-                shutil.move(str(src), str(dest))
+                self.transfer_executor.move(src, dest, override_config=override_cfg)
             elif plan.transfer_mode == TransferMode.COPY:
-                shutil.copy2(src, dest)
+                self.transfer_executor.copy(src, dest, override_config=override_cfg)
 
             return OperationResult(
                 plan=plan,

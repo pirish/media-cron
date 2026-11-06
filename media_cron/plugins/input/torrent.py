@@ -1,5 +1,4 @@
 import logging
-import shutil
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -10,6 +9,7 @@ from media_cron.plugins.registry import default_registry
 from media_cron.recovery.verifier import TransferVerifier
 from media_cron.torrent.base import TorrentClientProtocol, TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig, TorrentItem
+from media_cron.transfer.executor import FileTransferExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class TorrentInputPlugin(InputPlugin):
         config: TorrentClientConfig | None = None,
         target_identifier: str | None = None,
         verifier: TransferVerifier | None = None,
+        transfer_executor: FileTransferExecutor | None = None,
     ):
         self.config = config or TorrentClientConfig()
         if client:
@@ -31,6 +32,9 @@ class TorrentInputPlugin(InputPlugin):
             self.client = TorrentClientRegistry.create_client(self.config)
         self.target_identifier = target_identifier
         self.verifier = verifier if verifier is not None else TransferVerifier()
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
         self.processed_torrents: list[TorrentItem] = []
 
     @property
@@ -163,11 +167,7 @@ class TorrentInputPlugin(InputPlugin):
                     self.verifier.summary.items_purged += 1
 
             try:
-                if is_dir:
-                    shutil.copytree(local_path, staging_dest, dirs_exist_ok=True)
-                else:
-                    staging_dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(local_path, staging_dest)
+                self.transfer_executor.copy(local_path, staging_dest)
 
                 logger.info(
                     "Copied torrent payload '%s' to staging: %s", torrent.name, staging_dest

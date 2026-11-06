@@ -357,6 +357,7 @@ def apply_retention_policy(
     target_path: Path,
     retention_policy: RetentionPolicy | str = RetentionPolicy.PRESERVE,
     archive_dir: Path | None = None,
+    transfer_executor: object | None = None,
 ) -> None:
     """Applies retention policy to original source file after EPUB conversion.
 
@@ -381,10 +382,17 @@ def apply_retention_policy(
 
     if policy_str == RetentionPolicy.ARCHIVE.value:
         if archive_dir is not None:
+            from media_cron.transfer.executor import FileTransferExecutor
+
             archive_path = Path(archive_dir)
             archive_path.mkdir(parents=True, exist_ok=True)
             dest = archive_path / source_path.name
-            shutil.move(str(source_path), str(dest))
+            executor = (
+                transfer_executor
+                if isinstance(transfer_executor, FileTransferExecutor)
+                else FileTransferExecutor()
+            )
+            executor.move(source_path, dest)
         return
 
     if policy_str == RetentionPolicy.REPLACE.value:

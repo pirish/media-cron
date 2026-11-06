@@ -359,6 +359,14 @@ plugins:
     - "library_organizer"
     - "seed_relocator"
     - "junk_cleaner"
+
+# High-speed OS-native and custom utility file transfers
+transfer:
+  strategy: "native"                          # "native" (cp -r --reflink=auto / mv), "custom", or "builtin" (shutil)
+  copy_command: null                          # Optional custom copy template, e.g., "rsync -a {src} {dst}"
+  move_command: null                          # Optional custom move template, e.g., "rsync -a --remove-source-files {src} {dst}"
+  fallback_enabled: true                      # Automatically fall back to Python builtin on non-ENOSPC tool failures
+  timeout_seconds: 3600.0                     # Max timeout per external utility invocation
 ```
 
 ---
@@ -379,6 +387,11 @@ All YAML settings can be declared or overridden via environment variables for 12
 | `MEDIA_CRON_PATHS_REVIEW_DIR` | `paths.review_dir` | `None` | Staging directory for unrecognized media |
 | `MEDIA_CRON_MODE` | `general.mode` | `hardlink` | Transfer mode: `hardlink`, `copy`, `move` |
 | `MEDIA_CRON_DRY_RUN` | `general.dry_run` | `false` | Enable predictive simulation mode |
+| `MEDIA_CRON_TRANSFER_STRATEGY` | `transfer.strategy` | `native` | Transfer backend: `native`, `custom`, `builtin` |
+| `MEDIA_CRON_TRANSFER_COPY_COMMAND` | `transfer.copy_command` | `None` | Custom copy command template (`{src}` / `{dst}` or positional) |
+| `MEDIA_CRON_TRANSFER_MOVE_COMMAND` | `transfer.move_command` | `None` | Custom move command template (`{src}` / `{dst}` or positional) |
+| `MEDIA_CRON_TRANSFER_FALLBACK_ENABLED` | `transfer.fallback_enabled` | `true` | Fall back to `builtin` on non-`ENOSPC` external utility failures |
+| `MEDIA_CRON_TRANSFER_TIMEOUT_SECONDS` | `transfer.timeout_seconds` | `3600.0` | Subprocess timeout in seconds for external transfer utilities |
 
 #### Review Staging & Retention
 

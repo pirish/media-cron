@@ -24,9 +24,11 @@ class MediaRoutingEngine(MediaRoutingEngineProtocol):
         self,
         config: "MediaCronConfig | None" = None,
         verifier: object | None = None,
+        transfer_executor: object | None = None,
     ):
         self.config = config
         self.verifier = verifier
+        self.transfer_executor = transfer_executor
 
     def discover_route_items(
         self,
@@ -48,7 +50,10 @@ class MediaRoutingEngine(MediaRoutingEngineProtocol):
 
             if src.type == SourceEndpointType.DIRECTORY:
                 if src.path and src.path.exists():
-                    scanner = DirectoryScannerInput(verifier=self.verifier)
+                    scanner = DirectoryScannerInput(
+                        verifier=self.verifier,
+                        transfer_executor=self.transfer_executor,
+                    )
                     for item in scanner.discover(src.path, staging_dir, dry_run=dry_run):
                         resolved = item.source_path.resolve()
                         if resolved not in seen_paths:

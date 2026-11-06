@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from media_cron.recovery.models import RecoverySummary
+from media_cron.transfer.models import TransferSummary
 
 # Exit code constants
 EXIT_SUCCESS = 0
@@ -104,6 +105,7 @@ class OperationPlan:
     destination_path: Path | None = None
     dry_run: bool = False
     is_video_spool: bool = False
+    transfer_config_override: Any = None
 
 
 @dataclass
@@ -138,6 +140,7 @@ class BatchSummary:
     review_staged_count: int = 0
     routing_summary: dict[str, Any] = field(default_factory=dict)
     recovery_summary: RecoverySummary | None = None
+    transfer_summary: TransferSummary | None = None
 
     def to_dict(self) -> dict:
         data = {
@@ -171,6 +174,8 @@ class BatchSummary:
         }
         if self.recovery_summary is not None:
             data["recovery"] = self.recovery_summary.to_dict()
+        if self.transfer_summary is not None:
+            data["transfer_summary"] = self.transfer_summary.to_dict()
         if self.torrent_summary is not None:
             data["torrent_summary"] = self.torrent_summary
         if self.audiobook_summary is not None:

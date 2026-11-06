@@ -9,6 +9,7 @@ from pathlib import Path
 
 from media_cron.metadata.models import VideoReleaseBundle, VideoSpoolResult
 from media_cron.recovery.verifier import TransferVerifier
+from media_cron.transfer.executor import FileTransferExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,15 @@ logger = logging.getLogger(__name__)
 class VideoSpoolEngine:
     """Deposits video release bundles atomically into external video manager drop folders."""
 
-    def __init__(self, verifier: TransferVerifier | None = None) -> None:
+    def __init__(
+        self,
+        verifier: TransferVerifier | None = None,
+        transfer_executor: FileTransferExecutor | None = None,
+    ) -> None:
         self.verifier = verifier if verifier is not None else TransferVerifier()
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
 
     def stage_bundle(
         self,
@@ -72,7 +80,7 @@ class VideoSpoolEngine:
             os.link(src, dest)
             return "hardlink"
         except OSError:
-            shutil.copy2(src, dest)
+            self.transfer_executor.copy(src, dest)
             return "copy"
 
     def promote_bundle(

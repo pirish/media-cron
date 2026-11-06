@@ -3,6 +3,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from media_cron.models import MediaCategory, MediaRouteSummary, TransferMode
+from media_cron.transfer.models import TransferConfig
 
 __all__ = [
     "SupportedMediaType",
@@ -70,6 +71,7 @@ class DestinationEndpointConfig:
     type: DestinationEndpointType = DestinationEndpointType.LIBRARY
     path: Path | None = None
     template: str | None = None
+    transfer: TransferConfig | None = None
 
 
 @dataclass

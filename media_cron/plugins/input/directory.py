@@ -1,5 +1,4 @@
 import logging
-import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -7,6 +6,7 @@ from media_cron.models import DiscoveredItem
 from media_cron.plugins.base import InputPlugin
 from media_cron.plugins.registry import default_registry
 from media_cron.recovery.verifier import TransferVerifier
+from media_cron.transfer.executor import FileTransferExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,15 @@ logger = logging.getLogger(__name__)
 class DirectoryScannerInput(InputPlugin):
     """Discovers media files from a local source directory and stages them."""
 
-    def __init__(self, verifier: TransferVerifier | None = None) -> None:
+    def __init__(
+        self,
+        verifier: TransferVerifier | None = None,
+        transfer_executor: FileTransferExecutor | None = None,
+    ) -> None:
         self.verifier = verifier if verifier is not None else TransferVerifier()
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
 
     @property
     def plugin_name(self) -> str:
@@ -112,7 +119,7 @@ class DirectoryScannerInput(InputPlugin):
                         self.verifier.summary.items_purged += 1
 
                 # Atomically move to staging
-                shutil.move(str(src_file), str(dest_file))
+                self.transfer_executor.move(src_file, dest_file)
                 staged_stat = dest_file.stat()
                 yield DiscoveredItem(
                     source_path=dest_file,

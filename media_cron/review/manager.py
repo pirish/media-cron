@@ -17,6 +17,7 @@ from media_cron.review.models import (
     UnrecognizedFile,
     UserAnnotation,
 )
+from media_cron.transfer.executor import FileTransferExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,9 @@ logger = logging.getLogger(__name__)
 class ReviewManager(ReviewManagerProtocol):
     """Manages staging, metadata manifests, and manual triage of unrecognized media."""
 
-    def __init__(self, review_dir: Path):
+    def __init__(self, review_dir: Path, transfer_executor: FileTransferExecutor | None = None):
         self._review_dir = review_dir
+        self.transfer_executor = transfer_executor
 
     @property
     def review_dir(self) -> Path:
@@ -136,6 +138,7 @@ class ReviewManager(ReviewManagerProtocol):
 
         mode = config.general.mode.lower()
         normalized_seeds = {p.resolve() for p in (seeding_paths or set())}
+        executor = self.transfer_executor or FileTransferExecutor(getattr(config, "transfer", None))
 
         for p in source_paths:
             if not p.exists():
@@ -150,16 +153,16 @@ class ReviewManager(ReviewManagerProtocol):
                 try:
                     os.link(p, dest_file)
                 except OSError:
-                    shutil.copy2(p, dest_file)
+                    executor.copy(p, dest_file)
             elif mode == "move":
-                shutil.move(str(p), str(dest_file))
+                executor.move(p, dest_file)
             elif mode == "copy":
-                shutil.copy2(p, dest_file)
+                executor.copy(p, dest_file)
             else:  # hardlink
                 try:
                     os.link(p, dest_file)
                 except OSError:
-                    shutil.copy2(p, dest_file)
+                    executor.copy(p, dest_file)
 
         # Write manifest.json inside hidden staging
         manifest_path = hidden_staging / "manifest.json"
@@ -212,12 +215,15 @@ class ReviewManager(ReviewManagerProtocol):
             manifest.user_annotation = annotation
 
             if not dry_run:
+                executor = self.transfer_executor or FileTransferExecutor(
+                    getattr(config, "transfer", None)
+                )
                 for f in manifest.files:
                     src_file = item_dir / f.relative_path
                     dest_file = staging_dir / f.relative_path
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     if src_file.exists():
-                        shutil.move(str(src_file), str(dest_file))
+                        executor.move(src_file, dest_file)
 
                 # Write companion sidecar hint
                 hint_payload = annotation.to_dict()
@@ -260,10 +266,13 @@ class ReviewManager(ReviewManagerProtocol):
 
                 dest_file = dest_dir / rel_dest
                 if not dry_run:
+                    executor = self.transfer_executor or FileTransferExecutor(
+                        getattr(config, "transfer", None)
+                    )
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file = item_dir / f.relative_path
                     if src_file.exists():
-                        shutil.move(str(src_file), str(dest_file))
+                        executor.move(src_file, dest_file)
 
             if not dry_run:
                 shutil.rmtree(item_dir, ignore_errors=True)

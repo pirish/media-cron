@@ -29,6 +29,7 @@ from media_cron.models import (
 from media_cron.pipeline import Pipeline
 from media_cron.torrent.base import TorrentClientRegistry
 from media_cron.torrent.models import TorrentClientConfig
+from media_cron.transfer.models import TransferConfig, TransferConfigError, TransferStrategy
 
 app = typer.Typer(
     name="media-cron",
@@ -87,6 +88,24 @@ def render_text_summary(summary: BatchSummary) -> str:
                 f"Destination Bypassed: {rec.transfers_bypassed} (redundant transfer skipped)",
                 f"Corrupt Purged:       {rec.items_purged} (cleaned and restarted)",
                 f"Data Transfer Saved:  {format_bytes(rec.bytes_saved)}",
+            ]
+        )
+    if summary.transfer_summary and (
+        summary.transfer_summary.native_count > 0
+        or summary.transfer_summary.custom_count > 0
+        or summary.transfer_summary.builtin_count > 0
+        or summary.transfer_summary.fallback_count > 0
+    ):
+        tx = summary.transfer_summary
+        lines.extend(
+            [
+                "--- File Transfer Telemetry ---",
+                f"Native Transfers:     {tx.native_count}",
+                f"Custom Transfers:     {tx.custom_count}",
+                f"Builtin Transfers:    {tx.builtin_count}",
+                f"Fallback Events:      {tx.fallback_count}",
+                f"Bytes Transferred:    {format_bytes(tx.total_bytes_transferred)}",
+                f"Total Transfer Time:  {tx.total_duration_ms:.2f} ms",
             ]
         )
     if summary.torrent_summary:
@@ -186,7 +205,12 @@ def run_command(
         None, "--source", "--source-dir", "-s", help="Directory containing raw downloads"
     ),
     destination: Path | None = typer.Option(
-        None, "--destination", "--destination-dir", "-d", help="Target media library root"
+        None,
+        "--destination",
+        "--destination-dir",
+        "--dest",
+        "-d",
+        help="Target media library root",
     ),
     staging: Path | None = typer.Option(
         None, "--staging", "--staging-dir", help="Staging directory for processing isolation"
@@ -386,6 +410,37 @@ def run_command(
     log_backup_count: int | None = typer.Option(
         None, "--log-backup-count", help="Number of rotated backup log files to retain"
     ),
+    transfer_strategy: str | None = typer.Option(
+        None,
+        "--transfer-strategy",
+        help="File transfer strategy: native (cp/mv), custom, or builtin (shutil)",
+    ),
+    copy_cmd: str | None = typer.Option(
+        None,
+        "--copy-cmd",
+        help="Custom command template for file/directory copy operations (e.g. 'rsync -a {src} {dst}')",
+    ),
+    move_cmd: str | None = typer.Option(
+        None,
+        "--move-cmd",
+        help="Custom command template for file/directory move operations",
+    ),
+    no_transfer_fallback: bool = typer.Option(
+        False,
+        "--no-transfer-fallback",
+        help="Disable automatic fallback to Python builtin streaming when external utilities fail",
+    ),
+    transfer_timeout: float | None = typer.Option(
+        None,
+        "--transfer-timeout",
+        help="Maximum timeout in seconds for external transfer utility commands",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "--json-logs",
+        help="Emit output in JSON format",
+    ),
 ) -> None:
     """Ingest, clean, sanitize, and organize media into destination library."""
     # 1. Load config
@@ -526,6 +581,47 @@ def run_command(
         cfg.paths.review_dir = review_dir
     if review_max_age_days is not None:
         cfg.review.max_age_days = review_max_age_days
+
+    if json_output:
+        format = "json"
+
+    # Transfer CLI overrides
+    if any(
+        [
+            transfer_strategy is not None,
+            copy_cmd is not None,
+            move_cmd is not None,
+            no_transfer_fallback,
+            transfer_timeout is not None,
+        ]
+    ):
+        try:
+            eff_copy = copy_cmd if copy_cmd is not None else cfg.transfer.copy_command
+            eff_move = move_cmd if move_cmd is not None else cfg.transfer.move_command
+            if transfer_strategy is not None:
+                eff_strat = TransferStrategy.from_str(transfer_strategy)
+            elif copy_cmd is not None or move_cmd is not None:
+                eff_strat = TransferStrategy.CUSTOM
+            else:
+                eff_strat = cfg.transfer.strategy
+            eff_fallback = False if no_transfer_fallback else cfg.transfer.fallback_enabled
+            eff_timeout = (
+                transfer_timeout if transfer_timeout is not None else cfg.transfer.timeout_seconds
+            )
+            cfg.transfer = TransferConfig(
+                strategy=eff_strat,
+                copy_command=eff_copy,
+                move_command=eff_move,
+                fallback_enabled=eff_fallback,
+                timeout_seconds=eff_timeout,
+            )
+        except TransferConfigError as e:
+            msg = f"Configuration Error: {e}"
+            if format.lower() == "json":
+                typer.echo(json.dumps({"exit_code": EXIT_CONFIG_ERROR, "errors": [msg]}))
+            else:
+                typer.echo(msg, err=True)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
     if seeding_mode and cfg.active_torrent_client:
         if cfg.active_torrent_client not in cfg.torrent_clients:

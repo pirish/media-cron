@@ -1,5 +1,4 @@
 import os
-import shutil
 
 from media_cron.models import (
     OperationPlan,
@@ -9,10 +8,16 @@ from media_cron.models import (
 )
 from media_cron.plugins.base import OutputPlugin
 from media_cron.plugins.registry import default_registry
+from media_cron.transfer.executor import FileTransferExecutor
 
 
 class SeedRelocatorOutput(OutputPlugin):
     """Relocates original source media to a dedicated seeding directory."""
+
+    def __init__(self, transfer_executor: FileTransferExecutor | None = None) -> None:
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
 
     @property
     def plugin_name(self) -> str:
@@ -47,7 +52,7 @@ class SeedRelocatorOutput(OutputPlugin):
                     os.link(src, dest)
                 except OSError as err:
                     if err.errno == 18:  # EXDEV
-                        shutil.copy2(src, dest)
+                        self.transfer_executor.copy(src, dest)
                     else:
                         raise
 

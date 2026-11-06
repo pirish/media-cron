@@ -24,6 +24,7 @@ from media_cron.torrent.models import (
     TorrentFilterConfig,
     TorrentSeedingConfig,
 )
+from media_cron.transfer.models import TransferConfig, TransferStrategy
 
 DEFAULT_JUNK_EXTENSIONS = [
     ".nfo",
@@ -242,10 +243,15 @@ class ReviewConfig:
     max_age_days: int = 0
 
 
-def parse_route_config(data: dict) -> MediaRouteConfig:
+def parse_route_config(
+    data: dict,
+    base_transfer: TransferConfig | None = None,
+) -> MediaRouteConfig:
     route = MediaRouteConfig()
     if "transfer_mode" in data and data["transfer_mode"]:
         route.transfer_mode = str(data["transfer_mode"]).lower()
+    elif "mode" in data and data["mode"]:
+        route.transfer_mode = str(data["mode"]).lower()
     if "sources" in data and isinstance(data["sources"], list):
         sources = []
         for s in data["sources"]:
@@ -275,16 +281,25 @@ def parse_route_config(data: dict) -> MediaRouteConfig:
         route.sources = sources
     if "destination" in data and isinstance(data["destination"], dict):
         d = data["destination"]
+        if not route.transfer_mode:
+            if "transfer_mode" in d and d["transfer_mode"]:
+                route.transfer_mode = str(d["transfer_mode"]).lower()
+            elif "mode" in d and d["mode"]:
+                route.transfer_mode = str(d["mode"]).lower()
         dtype_str = str(d.get("type", "library")).lower()
         dtype = (
             DestinationEndpointType.SPOOL
             if dtype_str == "spool"
             else DestinationEndpointType.LIBRARY
         )
+        dest_transfer: TransferConfig | None = None
+        if "transfer" in d and isinstance(d["transfer"], dict):
+            dest_transfer = TransferConfig.from_dict(d["transfer"], base=base_transfer)
         route.destination = DestinationEndpointConfig(
             type=dtype,
             path=Path(d["path"]) if d.get("path") else None,
             template=d.get("template"),
+            transfer=dest_transfer,
         )
     return route
 
@@ -344,6 +359,7 @@ class MediaCronConfig:
     video: VideoConfig = field(default_factory=lambda: VideoConfig(enabled=False))
     review: ReviewConfig = field(default_factory=ReviewConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    transfer: TransferConfig = field(default_factory=TransferConfig)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> "MediaCronConfig":
@@ -417,6 +433,9 @@ class MediaCronConfig:
                     cfg.general.sample_size_threshold_mb = int(g["sample_size_threshold_mb"])
                 if "junk_extensions" in g:
                     cfg.general.junk_extensions = list(g["junk_extensions"])
+
+            if "transfer" in data and isinstance(data["transfer"], dict):
+                cfg.transfer = TransferConfig.from_dict(data["transfer"], base=cfg.transfer)
 
             if "templates" in data and isinstance(data["templates"], dict):
                 cfg.templates.update(data["templates"])
@@ -503,9 +522,11 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.audiobook.providers[pname] = prov_cfg
                 if "route" in ab and isinstance(ab["route"], dict):
-                    cfg.audiobook.route = parse_route_config(ab["route"])
+                    cfg.audiobook.route = parse_route_config(
+                        ab["route"], base_transfer=cfg.transfer
+                    )
                 elif any(k in ab for k in ("sources", "destination", "transfer_mode")):
-                    cfg.audiobook.route = parse_route_config(ab)
+                    cfg.audiobook.route = parse_route_config(ab, base_transfer=cfg.transfer)
 
             if "books" in data and isinstance(data["books"], dict):
                 bk = data["books"]
@@ -564,9 +585,9 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.books.providers[pname] = prov_cfg
                 if "route" in bk and isinstance(bk["route"], dict):
-                    cfg.books.route = parse_route_config(bk["route"])
+                    cfg.books.route = parse_route_config(bk["route"], base_transfer=cfg.transfer)
                 elif any(k in bk for k in ("sources", "destination", "transfer_mode")):
-                    cfg.books.route = parse_route_config(bk)
+                    cfg.books.route = parse_route_config(bk, base_transfer=cfg.transfer)
 
             if "music" in data and isinstance(data["music"], dict):
                 m = data["music"]
@@ -625,9 +646,9 @@ class MediaCronConfig:
                             prov_cfg.rate_limit_delay = float(pdata["rate_limit_delay"])
                         cfg.music.providers[pname] = prov_cfg
                 if "route" in m and isinstance(m["route"], dict):
-                    cfg.music.route = parse_route_config(m["route"])
+                    cfg.music.route = parse_route_config(m["route"], base_transfer=cfg.transfer)
                 elif any(k in m for k in ("sources", "destination", "transfer_mode")):
-                    cfg.music.route = parse_route_config(m)
+                    cfg.music.route = parse_route_config(m, base_transfer=cfg.transfer)
 
             if "video" in data and isinstance(data["video"], dict):
                 v = data["video"]
@@ -667,13 +688,37 @@ class MediaCronConfig:
                     if "max_retries" in ms:
                         cfg.video.media_server.max_retries = int(ms["max_retries"])
                 if "movies" in v and isinstance(v["movies"], dict):
-                    cfg.video.movies_route = parse_route_config(v["movies"])
+                    cfg.video.movies_route = parse_route_config(
+                        v["movies"], base_transfer=cfg.transfer
+                    )
                 elif "movies_route" in v and isinstance(v["movies_route"], dict):
-                    cfg.video.movies_route = parse_route_config(v["movies_route"])
+                    cfg.video.movies_route = parse_route_config(
+                        v["movies_route"], base_transfer=cfg.transfer
+                    )
                 if "tv" in v and isinstance(v["tv"], dict):
-                    cfg.video.tv_route = parse_route_config(v["tv"])
+                    cfg.video.tv_route = parse_route_config(v["tv"], base_transfer=cfg.transfer)
                 elif "tv_route" in v and isinstance(v["tv_route"], dict):
-                    cfg.video.tv_route = parse_route_config(v["tv_route"])
+                    cfg.video.tv_route = parse_route_config(
+                        v["tv_route"], base_transfer=cfg.transfer
+                    )
+
+            if "routes" in data and isinstance(data["routes"], dict):
+                rts = data["routes"]
+                for rkey, rdata in rts.items():
+                    if not isinstance(rdata, dict):
+                        continue
+                    norm_key = str(rkey).lower()
+                    parsed_rt = parse_route_config(rdata, base_transfer=cfg.transfer)
+                    if norm_key in ("movie", "movies"):
+                        cfg.video.movies_route = parsed_rt
+                    elif norm_key in ("tv", "series"):
+                        cfg.video.tv_route = parsed_rt
+                    elif norm_key == "music":
+                        cfg.music.route = parsed_rt
+                    elif norm_key in ("book", "books"):
+                        cfg.books.route = parsed_rt
+                    elif norm_key in ("audiobook", "audiobooks"):
+                        cfg.audiobook.route = parsed_rt
 
         # 3. Apply Environment Overrides
         env_source = os.getenv("MEDIA_CRON_SOURCE_DIR")
@@ -983,5 +1028,49 @@ class MediaCronConfig:
         env_log_backups = os.getenv("MEDIA_CRON_LOG_BACKUP_COUNT")
         if env_log_backups:
             cfg.logging.backup_count = int(env_log_backups)
+
+        # Transfer environment overrides
+        env_tx_strategy = os.getenv("MEDIA_CRON_TRANSFER_STRATEGY")
+        env_tx_copy_cmd = os.getenv("MEDIA_CRON_TRANSFER_COPY_COMMAND")
+        env_tx_move_cmd = os.getenv("MEDIA_CRON_TRANSFER_MOVE_COMMAND")
+        env_tx_fallback = os.getenv("MEDIA_CRON_TRANSFER_FALLBACK_ENABLED")
+        env_tx_timeout = os.getenv("MEDIA_CRON_TRANSFER_TIMEOUT_SECONDS")
+
+        if any(
+            v is not None
+            for v in (
+                env_tx_strategy,
+                env_tx_copy_cmd,
+                env_tx_move_cmd,
+                env_tx_fallback,
+                env_tx_timeout,
+            )
+        ):
+            strategy = cfg.transfer.strategy
+            copy_cmd = cfg.transfer.copy_command
+            move_cmd = cfg.transfer.move_command
+            fallback = cfg.transfer.fallback_enabled
+            timeout = cfg.transfer.timeout_seconds
+
+            if env_tx_copy_cmd is not None:
+                copy_cmd = env_tx_copy_cmd
+            if env_tx_move_cmd is not None:
+                move_cmd = env_tx_move_cmd
+            if env_tx_strategy is not None:
+                strategy = TransferStrategy.from_str(env_tx_strategy)
+            elif env_tx_copy_cmd is not None or env_tx_move_cmd is not None:
+                strategy = TransferStrategy.CUSTOM
+            if env_tx_fallback is not None:
+                fallback = env_tx_fallback.lower() in ("true", "1", "yes")
+            if env_tx_timeout is not None:
+                timeout = float(env_tx_timeout)
+
+            cfg.transfer = TransferConfig(
+                strategy=strategy,
+                copy_command=copy_cmd,
+                move_command=move_cmd,
+                fallback_enabled=fallback,
+                timeout_seconds=timeout,
+            )
 
         return cfg

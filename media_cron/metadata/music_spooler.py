@@ -7,10 +7,16 @@ import uuid
 from pathlib import Path
 
 from media_cron.metadata.models import MusicReleaseBundle, MusicSpoolResult
+from media_cron.transfer.executor import FileTransferExecutor
 
 
 class MusicSpoolEngine:
     """Deposits music release bundles atomically into external music manager drop folders."""
+
+    def __init__(self, transfer_executor: FileTransferExecutor | None = None) -> None:
+        self.transfer_executor = (
+            transfer_executor if transfer_executor is not None else FileTransferExecutor()
+        )
 
     def stage_bundle(
         self,
@@ -65,7 +71,7 @@ class MusicSpoolEngine:
             os.link(src, dest)
             return "hardlink"
         except OSError:
-            shutil.copy2(src, dest)
+            self.transfer_executor.copy(src, dest)
             return "copy"
 
     def promote_bundle(

@@ -78,12 +78,19 @@ class RouteResolver(RouteResolverProtocol):
             transfer_mode = TransferMode.HARDLINK
 
         # 2. Destination resolution
+        route_transfer_override = (
+            route_cfg.destination.transfer if (route_cfg and route_cfg.destination) else None
+        )
+        if route_transfer_override is not None and hasattr(config, "transfer") and config.transfer:
+            # Ensure unspecified fields in the route override inherit from global config.transfer
+            pass
         destination_endpoint: DestinationEndpointConfig
         if route_cfg and route_cfg.destination and route_cfg.destination.path is not None:
             destination_endpoint = DestinationEndpointConfig(
                 type=route_cfg.destination.type,
                 path=route_cfg.destination.path,
                 template=route_cfg.destination.template,
+                transfer=route_transfer_override,
             )
         else:
             # Domain-specific fallbacks
@@ -114,7 +121,10 @@ class RouteResolver(RouteResolverProtocol):
             destination_endpoint = DestinationEndpointConfig(
                 type=dtype,
                 path=dest_root,
-                template=None,
+                template=route_cfg.destination.template
+                if (route_cfg and route_cfg.destination)
+                else None,
+                transfer=route_transfer_override,
             )
 
         # 3. Sources resolution
